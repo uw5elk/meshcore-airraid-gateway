@@ -1992,6 +1992,14 @@ void MyMesh::handleCmdFrame(size_t len) {
   }
 }
 
+void MyMesh::injectChannelText(const uint8_t* frame, size_t len) {
+  if (len > MAX_FRAME_SIZE) {
+    len = MAX_FRAME_SIZE;
+  }
+  memcpy(cmd_frame, frame, len);
+  handleCmdFrame(len);
+}
+
 static bool save_filter(const ContactInfo& c) {
   return c.type != ADV_TYPE_NONE;   // don't save the transient/anon entries
 }

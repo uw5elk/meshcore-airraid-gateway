@@ -97,6 +97,7 @@ public:
 
   void loop();
   void handleCmdFrame(size_t len);
+  void injectChannelText(const uint8_t* frame, size_t len);
   bool advert();
   void enterCLIRescue();
 
