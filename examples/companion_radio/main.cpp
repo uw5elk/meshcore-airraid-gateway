@@ -247,7 +247,11 @@ void setup() {
   board.onBootComplete();
 
 #if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)
-  air_raid_gateway.begin(&the_mesh);
+  air_raid_gateway.begin(&the_mesh
+    #ifdef DISPLAY_CLASS
+      , &ui_task
+    #endif
+  );
 #endif
 }
 

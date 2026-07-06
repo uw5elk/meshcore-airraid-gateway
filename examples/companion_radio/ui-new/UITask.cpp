@@ -1,6 +1,7 @@
 #include "UITask.h"
 #include <helpers/TxtDataHelpers.h>
 #include "../MyMesh.h"
+#include "../AirRaidGateway.h"
 #include "target.h"
 #ifdef WIFI_SSID
   #include <WiFi.h>
@@ -95,6 +96,9 @@ class HomeScreen : public UIScreen {
 #endif
 #if UI_SENSORS_PAGE == 1
     SENSORS,
+#endif
+#ifdef WITH_AIR_RAID_GATEWAY
+    AIRRAID,
 #endif
     SHUTDOWN,
     Count    // keep as last
@@ -399,6 +403,44 @@ public:
       }
       if (sensors_scroll) sensors_scroll_offset = (sensors_scroll_offset+1)%sensors_nb;
       else sensors_scroll_offset = 0;
+#endif
+#ifdef WITH_AIR_RAID_GATEWAY
+    } else if (_page == HomePage::AIRRAID) {
+      char buf[32];
+
+      display.setColor(DisplayDriver::GREEN);
+      display.setTextSize(1);
+      display.drawTextCentered(display.width() / 2, 16, "Tryvoga KR");
+
+      bool alert = air_raid_gateway.isAlertActive();
+      display.setColor(alert ? DisplayDriver::RED : DisplayDriver::GREEN);
+      display.setTextSize(2);
+      if (!air_raid_gateway.hasBaseline()) {
+        display.setTextSize(1);
+        display.setColor(DisplayDriver::GREEN);
+        display.drawTextCentered(display.width() / 2, 30, "...");
+      } else {
+        display.drawTextCentered(display.width() / 2, 28, alert ? "TRYVOGA" : "VIDBIY");
+      }
+
+      display.setColor(DisplayDriver::GREEN);
+      display.setTextSize(1);
+
+      int http_code = air_raid_gateway.getLastHttpCode();
+      if (http_code == 0) {
+        strcpy(buf, "API: ...");
+      } else if (http_code == 200) {
+        snprintf(buf, sizeof(buf), "API: %lds ago", air_raid_gateway.secondsSinceLastSuccess());
+      } else {
+        snprintf(buf, sizeof(buf), "API err: %d", http_code);
+      }
+      display.drawTextLeftAlign(0, 46, buf);
+
+      snprintf(buf, sizeof(buf), "WiFi: %s", air_raid_gateway.isWifiConnected() ? "OK" : "---");
+      display.drawTextLeftAlign(0, 57, buf);
+
+      snprintf(buf, sizeof(buf), "%.2fV", board.getBattMilliVolts() / 1000.0f);
+      display.drawTextRightAlign(display.width() - 1, 57, buf);
 #endif
     } else if (_page == HomePage::SHUTDOWN) {
       display.setColor(DisplayDriver::GREEN);

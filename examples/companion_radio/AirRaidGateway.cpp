@@ -9,6 +9,7 @@
 #include <RTClib.h>
 #include <Utils.h>
 #include <helpers/TxtDataHelpers.h>
+#include "ui-new/UITask.h"
 
 #define ALERT_POLL_INTERVAL_MS     15000    // alerts.in.ua hard limit: 12 req/min
 #define ALERT_BACKOFF_MAX_MS      300000    // cap for 429 backoff
@@ -24,8 +25,9 @@
 // We claim slot 1 for our own alert channel.
 #define AIR_RAID_CHANNEL_SLOT          1
 
-void AirRaidGateway::begin(MyMesh* mesh) {
+void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
   _mesh = mesh;
+  _ui = ui;
   _state = STATE_UNKNOWN;
   _poll_interval_ms = ALERT_POLL_INTERVAL_MS;
   _next_poll_at = millis();  // poll as soon as WiFi comes up
@@ -34,6 +36,15 @@ void AirRaidGateway::begin(MyMesh* mesh) {
   WiFi.mode(WIFI_STA);
   WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
   MESH_DEBUG_PRINTLN("AirRaidGateway: connecting to WiFi '%s'...", GW_WIFI_SSID);
+}
+
+bool AirRaidGateway::isWifiConnected() const {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+long AirRaidGateway::secondsSinceLastSuccess() const {
+  if (_last_success_at == 0) return -1;
+  return (long)((millis() - _last_success_at) / 1000);
 }
 
 void AirRaidGateway::registerChannel() {
@@ -98,15 +109,18 @@ void AirRaidGateway::poll() {
 
   if (!http.begin(client, url)) {
     MESH_DEBUG_PRINTLN("AirRaidGateway: http.begin() failed");
+    _last_http_code = -1;
     return;
   }
   http.addHeader("Authorization", "Bearer " ALERTS_TOKEN);
 
   int code = http.GET();
+  _last_http_code = code;
 
   if (code == 200) {
     String body = http.getString();
     _poll_interval_ms = ALERT_POLL_INTERVAL_MS;  // clear any backoff
+    _last_success_at = millis();
 
     AlertState new_state = STATE_UNKNOWN;
     for (size_t i = 0; i < body.length(); i++) {
@@ -141,6 +155,14 @@ void AirRaidGateway::handleState(AlertState new_state) {
   if (new_state == _state) return;  // no change -> no message
 
   _state = new_state;
+
+  if (_ui != NULL) {
+    if (new_state == STATE_ALERT) {
+      _ui->showAlert("TRYVOGA", 5000);
+    } else {
+      _ui->showAlert("VIDBIY", 5000);
+    }
+  }
 
   DateTime dt(_mesh->getRTCClock()->getCurrentTime());
   char msg[96];
