@@ -21,7 +21,9 @@ private:
   unsigned long _next_poll_at = 0;
   unsigned long _poll_interval_ms = 0;
   unsigned long _last_wifi_reconnect_attempt = 0;
+  uint8_t _channel_idx = 0;   // resolved by registerChannel(); falls back to Public (0) on failure
 
+  void registerChannel();
   void poll();
   void handleState(AlertState new_state);
   void sendChannelText(const char* text);

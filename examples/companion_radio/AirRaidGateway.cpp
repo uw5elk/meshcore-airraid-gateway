@@ -7,6 +7,8 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <RTClib.h>
+#include <Utils.h>
+#include <helpers/TxtDataHelpers.h>
 
 #define ALERT_POLL_INTERVAL_MS     15000    // alerts.in.ua hard limit: 12 req/min
 #define ALERT_BACKOFF_MAX_MS      300000    // cap for 429 backoff
@@ -18,15 +20,52 @@
 #define CMD_SEND_CHANNEL_TXT_MSG_VAL   3
 #define TXT_TYPE_PLAIN_VAL             0
 
+// Index 0 is always "Public" (added by MyMesh::begin() on every boot).
+// We claim slot 1 for our own alert channel.
+#define AIR_RAID_CHANNEL_SLOT          1
+
 void AirRaidGateway::begin(MyMesh* mesh) {
   _mesh = mesh;
   _state = STATE_UNKNOWN;
   _poll_interval_ms = ALERT_POLL_INTERVAL_MS;
   _next_poll_at = millis();  // poll as soon as WiFi comes up
+  registerChannel();
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
   MESH_DEBUG_PRINTLN("AirRaidGateway: connecting to WiFi '%s'...", GW_WIFI_SSID);
+}
+
+void AirRaidGateway::registerChannel() {
+  uint8_t psk[16];
+  if (!mesh::Utils::fromHex(psk, sizeof(psk), CHANNEL_PSK_HEX)) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: CHANNEL_PSK_HEX must be exactly 32 hex chars - falling back to Public channel");
+    _channel_idx = 0;
+    return;
+  }
+
+  ChannelDetails desired;
+  memset(&desired, 0, sizeof(desired));
+  StrHelper::strncpy(desired.name, CHANNEL_NAME, sizeof(desired.name));
+  memcpy(desired.channel.secret, psk, sizeof(psk));  // remaining bytes stay 0 -> 128-bit key
+
+  ChannelDetails existing;
+  bool already_registered = _mesh->getChannel(AIR_RAID_CHANNEL_SLOT, existing)
+    && strncmp(existing.name, desired.name, sizeof(desired.name)) == 0
+    && memcmp(existing.channel.secret, desired.channel.secret, sizeof(desired.channel.secret)) == 0;
+
+  if (already_registered) {
+    _channel_idx = AIR_RAID_CHANNEL_SLOT;
+    return;
+  }
+
+  if (_mesh->setChannel(AIR_RAID_CHANNEL_SLOT, desired)) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: registered channel '%s' at idx %d", CHANNEL_NAME, AIR_RAID_CHANNEL_SLOT);
+    _channel_idx = AIR_RAID_CHANNEL_SLOT;
+  } else {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: setChannel(%d) failed - falling back to Public channel", AIR_RAID_CHANNEL_SLOT);
+    _channel_idx = 0;
+  }
 }
 
 void AirRaidGateway::loop() {
@@ -118,7 +157,7 @@ void AirRaidGateway::sendChannelText(const char* text) {
   int i = 0;
   frame[i++] = CMD_SEND_CHANNEL_TXT_MSG_VAL;
   frame[i++] = TXT_TYPE_PLAIN_VAL;
-  frame[i++] = CHANNEL_IDX;
+  frame[i++] = _channel_idx;
 
   uint32_t ts = _mesh->getRTCClock()->getCurrentTime();
   memcpy(&frame[i], &ts, 4);
