@@ -2,6 +2,11 @@
 #include <Mesh.h>
 #include "MyMesh.h"
 
+#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)
+  #include "AirRaidGateway.h"
+  AirRaidGateway air_raid_gateway;
+#endif
+
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
   uint32_t n = 0;
@@ -240,11 +245,18 @@ void setup() {
 #endif
 
   board.onBootComplete();
+
+#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)
+  air_raid_gateway.begin(&the_mesh);
+#endif
 }
 
 void loop() {
   the_mesh.loop();
   sensors.loop();
+#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)
+  air_raid_gateway.loop();
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif

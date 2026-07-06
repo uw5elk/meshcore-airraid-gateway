@@ -17,3 +17,6 @@ compile_commands.json
 .venv/
 venv/
 platformio.local.ini
+
+# contains real WiFi/alerts.in.ua credentials once filled in - never commit
+examples/companion_radio/AirRaidGatewayConfig.h
