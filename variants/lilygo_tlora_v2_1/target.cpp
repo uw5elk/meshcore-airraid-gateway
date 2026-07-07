@@ -14,7 +14,10 @@ EnvironmentSensorManager sensors;
 
 #ifdef DISPLAY_CLASS
   DISPLAY_CLASS display;
-  MomentaryButton user_btn(PIN_USER_BTN, 1000, true);
+#ifndef PIN_USER_BTN_PULLUP
+  #define PIN_USER_BTN_PULLUP false
+#endif
+  MomentaryButton user_btn(PIN_USER_BTN, 1000, true, PIN_USER_BTN_PULLUP);
 #endif
 
 bool radio_init() {

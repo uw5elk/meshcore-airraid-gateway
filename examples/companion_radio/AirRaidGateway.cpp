@@ -104,9 +104,7 @@ void AirRaidGateway::poll() {
   http.setConnectTimeout(ALERT_HTTP_TIMEOUT_MS);
   http.setTimeout(ALERT_HTTP_TIMEOUT_MS);
 
-  char url[96];
-  snprintf(url, sizeof(url), "https://api.alerts.in.ua/v1/iot/active_air_raid_alerts/%d.json", ALERTS_UID);
-
+  static const char* url = "https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json";
   if (!http.begin(client, url)) {
     MESH_DEBUG_PRINTLN("AirRaidGateway: http.begin() failed");
     _last_http_code = -1;
@@ -122,17 +120,32 @@ void AirRaidGateway::poll() {
     _poll_interval_ms = ALERT_POLL_INTERVAL_MS;  // clear any backoff
     _last_success_at = millis();
 
-    AlertState new_state = STATE_UNKNOWN;
-    for (size_t i = 0; i < body.length(); i++) {
-      char c = body[i];
-      if (c == 'A' || c == 'P') { new_state = STATE_ALERT; break; }
-      if (c == 'N') { new_state = STATE_CLEAR; break; }
+    // Body is a JSON string literal, e.g. "   NNN...A...N" - strip the surrounding quotes
+    // (if present) so index 0 of the content lines up with UID 0. Verified against live data:
+    // UID 9 (Dnipropetrovsk oblast) and UID 279 (Kryvyi Rih) both matched known live state at
+    // this 0-based offset.
+    int start = 0;
+    int content_len = (int)body.length();
+    if (content_len >= 2 && body[0] == '"' && body[content_len - 1] == '"') {
+      start = 1;
+      content_len -= 2;
     }
 
-    if (new_state == STATE_UNKNOWN) {
-      MESH_DEBUG_PRINTLN("AirRaidGateway: unrecognised response: %s", body.c_str());
+    if (content_len <= ALERTS_UID) {
+      // Truncated/short/unexpected response - do NOT touch _state, so we never send a false
+      // all-clear (or false alert) just because this one poll came back malformed.
+      MESH_DEBUG_PRINTLN("AirRaidGateway: response too short (%d chars, need > %d) - ignoring, keeping previous state", content_len, ALERTS_UID);
     } else {
-      handleState(new_state);
+      char c = body[start + ALERTS_UID];
+      AlertState new_state = STATE_UNKNOWN;
+      if (c == 'A' || c == 'P') new_state = STATE_ALERT;
+      else if (c == 'N') new_state = STATE_CLEAR;
+
+      if (new_state == STATE_UNKNOWN) {
+        MESH_DEBUG_PRINTLN("AirRaidGateway: unexpected char '%c' at index %d - ignoring, keeping previous state", c, ALERTS_UID);
+      } else {
+        handleState(new_state);
+      }
     }
   } else if (code == 401) {
     MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP 401 - bad/expired token");
