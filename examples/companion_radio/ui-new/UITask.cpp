@@ -10,6 +10,12 @@
 #ifndef AUTO_OFF_MILLIS
   #define AUTO_OFF_MILLIS     15000   // 15 seconds
 #endif
+// How long the display stays on after AirRaidGateway wakes it for a state
+// change. Falls back to the normal AUTO_OFF_MILLIS on boards that don't set
+// this (i.e. everywhere except our env).
+#ifndef AIR_RAID_WAKE_MS
+  #define AIR_RAID_WAKE_MS    AUTO_OFF_MILLIS
+#endif
 #define BOOT_SCREEN_MILLIS   3000   // 3 seconds
 
 #ifdef PIN_STATUS_LED
@@ -182,7 +188,12 @@ class HomeScreen : public UIScreen {
 
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
-     : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
+     : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs),
+#ifdef WITH_AIR_RAID_GATEWAY
+       _page(HomePage::AIRRAID),
+#else
+       _page(0),
+#endif
        _shutdown_init(false), sensors_lpp(200) {  }
 
   void poll() override {
@@ -636,6 +647,13 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 void UITask::showAlert(const char* text, int duration_millis) {
   strcpy(_alert, text);
   _alert_expiry = millis() + duration_millis;
+}
+
+void UITask::wakeDisplay() {
+  if (_display != NULL) {
+    if (!_display->isOn()) _display->turnOn();
+    _auto_off = millis() + AIR_RAID_WAKE_MS;
+  }
 }
 
 void UITask::notify(UIEventType t) {

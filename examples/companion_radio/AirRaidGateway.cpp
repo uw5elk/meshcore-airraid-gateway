@@ -179,6 +179,7 @@ void AirRaidGateway::handleState(AlertState new_state) {
   _state = new_state;
 
   if (_ui != NULL) {
+    _ui->wakeDisplay();
     if (new_state == STATE_ALERT) {
       _ui->showAlert("TRYVOGA", 5000);
     } else {

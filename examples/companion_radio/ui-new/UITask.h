@@ -74,6 +74,7 @@ public:
 
   void gotoHomeScreen() { setCurrScreen(home); }
   void showAlert(const char* text, int duration_millis);
+  void wakeDisplay();   // turn display on (if off) and hold it on for AIR_RAID_WAKE_MS
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }
   bool isButtonPressed() const;
