@@ -6,15 +6,19 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <RTClib.h>
 #include <Utils.h>
 #include <helpers/TxtDataHelpers.h>
 #include "ui-new/UITask.h"
+#include <time.h>
 
 #define ALERT_POLL_INTERVAL_MS     15000    // alerts.in.ua hard limit: 12 req/min
 #define ALERT_BACKOFF_MAX_MS      300000    // cap for 429 backoff
 #define ALERT_HTTP_TIMEOUT_MS       5000
 #define ALERT_WIFI_RETRY_MS        10000
+
+// Anything below this means NTP hasn't synced yet (fresh boot reads back an
+// implausible epoch) - never print a bogus timestamp in an alert message.
+#define NTP_READY_EPOCH_THRESHOLD  1700000000UL   // ~2023-11-14 UTC
 
 // CMD_SEND_CHANNEL_TXT_MSG value (private #define in MyMesh.cpp:8, not exposed
 // via MyMesh.h) - kept in sync manually since injectChannelText() must not change.
@@ -36,6 +40,11 @@ void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
   WiFi.mode(WIFI_STA);
   WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
   MESH_DEBUG_PRINTLN("AirRaidGateway: connecting to WiFi '%s'...", GW_WIFI_SSID);
+
+  // Kyiv local time (EET/EEST) for alert message timestamps, via NTP over our
+  // own WiFi - independent of the mesh clock. getRTCClock() stays UTC, synced
+  // from advert packets, and is still used only for the wire frame timestamp.
+  configTzTime("EET-2EEST,M3.5.0/1,M10.5.0/1", "pool.ntp.org", "time.google.com");
 }
 
 bool AirRaidGateway::isWifiConnected() const {
@@ -177,12 +186,24 @@ void AirRaidGateway::handleState(AlertState new_state) {
     }
   }
 
-  DateTime dt(_mesh->getRTCClock()->getCurrentTime());
   char msg[96];
-  if (new_state == STATE_ALERT) {
-    snprintf(msg, sizeof(msg), "\xF0\x9F\x94\xB4 ПОВІТРЯНА ТРИВОГА — %s %02d:%02d", REGION_NAME, dt.hour(), dt.minute());
+  time_t t = time(nullptr);  // system time: NTP-synced, already Kyiv-local via configTzTime()
+  if (t < NTP_READY_EPOCH_THRESHOLD) {
+    // Fresh boot, NTP hasn't synced yet - never print a bogus timestamp.
+    MESH_DEBUG_PRINTLN("AirRaidGateway: NTP not synced yet, sending alert without a timestamp");
+    if (new_state == STATE_ALERT) {
+      snprintf(msg, sizeof(msg), "\xF0\x9F\x94\xB4 ПОВІТРЯНА ТРИВОГА — %s", REGION_NAME);
+    } else {
+      snprintf(msg, sizeof(msg), "\xF0\x9F\x9F\xA2 Відбій — %s", REGION_NAME);
+    }
   } else {
-    snprintf(msg, sizeof(msg), "\xF0\x9F\x9F\xA2 Відбій — %s %02d:%02d", REGION_NAME, dt.hour(), dt.minute());
+    struct tm lt;
+    localtime_r(&t, &lt);
+    if (new_state == STATE_ALERT) {
+      snprintf(msg, sizeof(msg), "\xF0\x9F\x94\xB4 ПОВІТРЯНА ТРИВОГА — %s %02d:%02d", REGION_NAME, lt.tm_hour, lt.tm_min);
+    } else {
+      snprintf(msg, sizeof(msg), "\xF0\x9F\x9F\xA2 Відбій — %s %02d:%02d", REGION_NAME, lt.tm_hour, lt.tm_min);
+    }
   }
   sendChannelText(msg);
 }
