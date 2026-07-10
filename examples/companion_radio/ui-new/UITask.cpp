@@ -6,6 +6,13 @@
 #ifdef WIFI_SSID
   #include <WiFi.h>
 #endif
+#ifdef WITH_AIR_RAID_GATEWAY
+  #include <time.h>
+  // Mirrors AirRaidGateway.cpp's NTP_READY_EPOCH_THRESHOLD. Duplicated
+  // (not exposed via AirRaidGateway.h) to keep this UI-only change
+  // scoped to UITask.cpp.
+  #define AIRRAID_UI_NTP_READY_EPOCH_THRESHOLD 1700000000UL   // ~2023-11-14 UTC
+#endif
 
 #ifndef AUTO_OFF_MILLIS
   #define AUTO_OFF_MILLIS     15000   // 15 seconds
@@ -109,6 +116,18 @@ class HomeScreen : public UIScreen {
     SHUTDOWN,
     Count    // keep as last
   };
+
+#ifdef WITH_AIR_RAID_GATEWAY
+  // Button cycle on air-raid gateway boards: only AIRRAID (status),
+  // ADVERT (manual advert) RADIO (link diag) and SHUTDOWN (only manual
+  // power-off path) are reachable. The rest of the enum still exists
+  // (e.g. for GPS/SENSORS builds combined with this flag) but is skipped
+  // when cycling with the button.
+  static bool isPageInCycle(uint8_t page) {
+    return page == HomePage::AIRRAID || page == HomePage::ADVERT ||
+           page == HomePage::RADIO   || page == HomePage::SHUTDOWN;
+  }
+#endif
 
   UITask* _task;
   mesh::RTCClock* _rtc;
@@ -447,6 +466,20 @@ public:
       }
       display.drawTextLeftAlign(0, 46, buf);
 
+      // NTP-synced Kyiv local time, same source as alert message timestamps
+      // in AirRaidGateway.cpp (system time is already Kyiv-local via
+      // configTzTime()).
+      char timebuf[6];
+      time_t now = time(nullptr);
+      if (now < AIRRAID_UI_NTP_READY_EPOCH_THRESHOLD) {
+        strcpy(timebuf, "--:--");
+      } else {
+        struct tm lt;
+        localtime_r(&now, &lt);
+        snprintf(timebuf, sizeof(timebuf), "%02d:%02d", lt.tm_hour, lt.tm_min);
+      }
+      display.drawTextRightAlign(display.width() - 1, 46, timebuf);
+
       snprintf(buf, sizeof(buf), "WiFi: %s", air_raid_gateway.isWifiConnected() ? "OK" : "---");
       display.drawTextLeftAlign(0, 57, buf);
 
@@ -468,11 +501,23 @@ public:
 
   bool handleInput(char c) override {
     if (c == KEY_LEFT || c == KEY_PREV) {
+#ifdef WITH_AIR_RAID_GATEWAY
+      do {
+        _page = (_page + HomePage::Count - 1) % HomePage::Count;
+      } while (!isPageInCycle(_page));
+#else
       _page = (_page + HomePage::Count - 1) % HomePage::Count;
+#endif
       return true;
     }
     if (c == KEY_NEXT || c == KEY_RIGHT) {
+#ifdef WITH_AIR_RAID_GATEWAY
+      do {
+        _page = (_page + 1) % HomePage::Count;
+      } while (!isPageInCycle(_page));
+#else
       _page = (_page + 1) % HomePage::Count;
+#endif
       if (_page == HomePage::RECENT) {
         _task->showAlert("Recent adverts", 800);
       }
