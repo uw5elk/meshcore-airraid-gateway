@@ -1,128 +1,161 @@
-## About MeshCore
+# Air-Raid Alert Gateway (шлюз повітряних тривог) на базі MeshCore
 
-MeshCore is a lightweight, portable C++ library that enables multi-hop packet routing for embedded projects using LoRa and other packet radios. It is designed for developers who want to create resilient, decentralized communication networks that work without the internet.
+> **Це форк [MeshCore](https://github.com/meshcore-dev/MeshCore)** — універсальної бібліотеки
+> для multi-hop LoRa-маршрутизації. Ліцензія MIT зберігається (див. [license.txt](license.txt)).
+> Цей README описує **надбудову**, додану в цьому форку: шлюз повітряних тривог поверх
+> стандартного `companion_radio`. Оригінальний README проєкту MeshCore — у
+> [README-meshcore.md](README-meshcore.md).
 
-## 🔍 What is MeshCore?
+Шлюз повітряних тривог на базі MeshCore для Кривого Рогу.
 
-MeshCore now supports a range of LoRa devices, allowing for easy flashing without the need to compile firmware manually. Users can flash a pre-built binary using tools like Adafruit ESPTool and interact with the network through a serial console.
-MeshCore provides the ability to create wireless mesh networks, similar to Meshtastic and Reticulum but with a focus on lightweight multi-hop packet routing for embedded projects. Unlike Meshtastic, which is tailored for casual LoRa communication, or Reticulum, which offers advanced networking, MeshCore balances simplicity with scalability, making it ideal for custom embedded solutions, where devices (nodes) can communicate over long distances by relaying messages through intermediate nodes. This is especially useful in off-grid, emergency, or tactical situations where traditional communication infrastructure is unavailable.
+## Що це
 
-## ⚡ Key Features
+Firmware для `companion_radio` (роль Companion, не repeater/room-server), що перетворює стан
+повітряної тривоги з інтернету на повідомлення в LoRa-мережі MeshCore — доступне навіть тим,
+у кого немає власного інтернету, але є mesh-покриття.
 
-* Multi-Hop Packet Routing
-  * Devices can forward messages across multiple nodes, extending range beyond a single radio's reach.
-  * Supports up to a configurable number of hops to balance network efficiency and prevent excessive traffic.
-  * Nodes use fixed roles where "Companion" nodes are not repeating messages at all to prevent adverse routing paths from being used.
-* Supports LoRa Radios – Works with Heltec, RAK Wireless, and other LoRa-based hardware.
-* Decentralized & Resilient – No central server or internet required; the network is self-healing.
-* Low Power Consumption – Ideal for battery-powered or solar-powered devices.
-* Simple to Deploy – Pre-built example applications make it easy to get started.
+## Що робить
 
-## 🎯 What Can You Use MeshCore For?
+- Опитує bulk-ендпоінт [alerts.in.ua](https://alerts.in.ua) по WiFi кожні 15 секунд:
+  ```
+  https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json
+  ```
+  Зверніть увагу: **без `<uid>` у шляху** — це один загальний ендпоінт для всіх локацій, на
+  відміну від застарілого `.../active_air_raid_alerts/<uid>.json`.
+- Відповідь — один JSON-рядок, символ на кожну локацію, наприклад `"NNNPN...A...N"`, де кожен
+  символ — стан однієї локації (`N` = немає тривоги, `A`/`P` = тривога). `ALERTS_UID` у конфігу —
+  це **0-based індекс символу** в цьому рядку (не частина URL). Прошивка бере
+  `body[ALERTS_UID]` (з поправкою на лапки навколо JSON-рядка) і читає стан лише своєї локації.
+- При **зміні** стану (тривога ⇄ відбій) шле повідомлення у ваш власний груповий LoRa-канал
+  MeshCore (див. розділ [Канал](#канал) нижче) — його отримують усі учасники mesh-мережі в
+  радіусі покриття, незалежно від того, чи є в них інтернет.
+- Перше зчитування після старту — беззвучне (встановлює базовий стан, не шле повідомлення).
 
-* Off-Grid Communication: Stay connected even in remote areas.
-* Emergency Response & Disaster Recovery: Set up instant networks where infrastructure is down.
-* Outdoor Activities: Hiking, camping, and adventure racing communication.
-* Tactical & Security Applications: Military, law enforcement, and private security use cases.
-* IoT & Sensor Networks: Collect data from remote sensors and relay it back to a central location.
+## UID — як знайти для свого міста
 
-## 🚀 How to Get Started
+`ALERTS_UID` — це індекс вашої локації в bulk-відповіді, і він **не збігається** з офіційною
+таблицею UID 3–31 з документації alerts.in.ua — та таблиця охоплює лише **області** (region-level,
+окремий, менший простір значень). Для міст/громад потрібен **повний список локацій** — Google-таблиця,
+посилання на яку є на [devs.alerts.in.ua](https://devs.alerts.in.ua). Знайдіть свій населений пункт
+у повному списку та візьміть його індекс.
 
-- Watch the [MeshCore QuickStart Playlist](https://www.youtube.com/watch?v=iaFltojJrAc&list=PLshzThxhw4O4WU_iZo3NmNZOv6KMrUuF9) by The Comms Channel
-- Watch the [MeshCore Technical Presentation](https://www.youtube.com/watch?v=OwmkVkZQTf4) by Liam Cottle.
-- Read through our [Frequently Asked Questions](./docs/faq.md) and [Documentation](https://docs.meshcore.io).
-- Flash the MeshCore firmware on a supported device.
-- Connect with a supported client.
+Приклади (перевірено проти живих даних):
+- `279` — м. Кривий Ріг + Криворізька громада
+- `9` — Дніпропетровська обл. (рівень області, покриває Кривий Ріг як fallback, якщо
+  city-рівень чомусь недоступний)
 
-For developers:
+Сервіс документує лише коди помилок 401 (поганий/протермінований токен) і 429 (rate limit).
+HTTP 404 сигналізує про **старий, вже не чинний** шлях `/{uid}.json` — з поточним bulk-ендпоінтом
+його ви не побачите.
 
-- Install [PlatformIO](https://docs.platformio.org) in [Visual Studio Code](https://code.visualstudio.com).
-- Clone and open the MeshCore repository in Visual Studio Code.
-- See the example applications you can modify and run:
-  - [Companion Radio](./examples/companion_radio) - For use with an external chat app, over BLE, USB or Wi-Fi.
-  - [KISS Modem](./examples/kiss_modem) - Serial KISS protocol bridge for host applications. ([protocol docs](./docs/kiss_modem_protocol.md))
-  - [Simple Repeater](./examples/simple_repeater) - Extends network coverage by relaying messages.
-  - [Simple Room Server](./examples/simple_room_server) - A simple BBS server for shared Posts.
-  - [Simple Secure Chat](./examples/simple_secure_chat) - Secure terminal based text communication between devices.
-  - [Simple Sensor](./examples/simple_sensor) - Remote sensor node with telemetry and alerting.
+Обмеження запитів alerts.in.ua — 12 req/min; прошивка опитує раз на 15 с, з подвоєнням інтервалу
+(до 5 хв) при HTTP 429.
 
-The Simple Secure Chat example can be interacted with through the Serial Monitor in Visual Studio Code, or with a Serial USB Terminal on Android.
+## Залізо
 
-## ⚡️ MeshCore Flasher
+- **Плата:** LilyGo T3 LoRa32 v1.6.1 (радіочіп SX1276, без TCXO)
+- **Діапазон:** 433 МГц
+- **Кнопка:** GPIO4 — див. [Gotchas](#gotchas--граблі) нижче, чому саме цей пін
 
-We have prebuilt firmware ready to flash on supported devices.
+## Радіопараметри
 
-- Launch https://meshcore.io/flasher
-- Select a supported device
-- Flash one of the firmware types:
-  - Companion, Repeater or Room Server
-- Once flashing is complete, you can connect with one of the MeshCore clients below.
+| Параметр | Значення |
+|---|---|
+| Частота | 433.650 МГц |
+| Bandwidth | 62.5 кГц |
+| Spreading Factor | 8 |
+| Coding Rate | 8 |
+| TX Power | 20 dBm |
 
-## 📱 MeshCore Clients
+## Як зібрати
 
-**Companion Firmware**
+PlatformIO, окремий env:
 
-The companion firmware can be connected to via BLE, USB or Wi-Fi depending on the firmware type you flashed.
-
-- Web: https://app.meshcore.nz
-- Android: https://play.google.com/store/apps/details?id=com.liamcottle.meshcore.android
-- iOS: https://apps.apple.com/us/app/meshcore/id6742354151?platform=iphone
-- NodeJS: https://github.com/liamcottle/meshcore.js
-- Python: https://github.com/fdlamotte/meshcore-cli
-
-**Repeater and Room Server Firmware**
-
-The repeater and room server firmware can be set up via USB in the web config tool.
-
-- https://config.meshcore.io
-
-They can also be managed via LoRa in the mobile app by using the Remote Management feature.
-
-## 🛠 Hardware Compatibility
-
-MeshCore is designed for devices listed in the [MeshCore Flasher](https://meshcore.io/flasher)
-
-## 📜 License
-
-MeshCore is open-source software released under the MIT License. You are free to use, modify, and distribute it for personal and commercial projects.
-
-## Contributing
-
-Please submit PR's using 'dev' as the base branch!
-For minor changes just submit your PR and we'll try to review it, but for anything more 'impactful' please open an Issue first and start a discussion. It is better to sound out what it is you want to achieve first, and try to come to a consensus on what the best approach is, especially when it impacts the structure or architecture of this codebase.
-
-Here are some general principles you should try to adhere to:
-* Keep it simple. Please, don't think like a high-level lang programmer. Think embedded, and keep code concise, without any unnecessary layers.
-* No dynamic memory allocation, except during setup/begin functions.
-* Use the same brace and indenting style that's in the core source modules. (A .clang-format is probably going to be added soon, but please do NOT retroactively re-format existing code. This just creates unnecessary diffs that make finding problems harder)
-
-Help us prioritize! Please react with thumbs-up to issues/PRs you care about most. We look at reaction counts when planning work.
-
-### Running unit tests
-
-To run unit tests, run the following command:
-
-```bash
-pio test --environment native --verbose
+```
+pio run -e LilyGo_TLora_V2_1_1_6_airraid
 ```
 
-## Road-Map / To-Do
+## Configuration
 
-There are a number of fairly major features in the pipeline, with no particular time-frames attached yet. In very rough chronological order:
-- [X] Companion radio: UI redesign
-- [X] Repeater + Room Server: add ACL's (like Sensor Node has)
-- [X] Standardise Bridge mode for repeaters
-- [ ] Repeater/Bridge: Standardise the Transport Codes for zoning/filtering
-- [X] Core + Repeater: enhanced zero-hop neighbour discovery
-- [ ] Core: round-trip manual path support
-- [ ] Companion + Apps: support for multiple sub-meshes (and 'off-grid' client repeat mode)
-- [ ] Core + Apps: support for LZW message compression
-- [ ] Core: dynamic CR (Coding Rate) for weak vs strong hops
-- [ ] Core: new framework for hosting multiple virtual nodes on one physical device
-- [ ] V2 protocol spec: discussion and consensus around V2 packet protocol, including path hashes, new encryption specs, etc
+Перед збіркою створіть **свій** `examples/companion_radio/AirRaidGatewayConfig.h` — цей файл
+у `.gitignore` і **ніколи не комітиться** (містить секрети):
 
-## 📞 Get Support
+```cpp
+#pragma once
 
-- Report bugs and request features on the [GitHub Issues](https://github.com/ripplebiz/MeshCore/issues) page.
-- Find additional guides and components on [my site](https://buymeacoffee.com/ripplebiz).
-- Join [MeshCore Discord](https://meshcore.gg) to chat with the developers and get help from the community.
+#define GW_WIFI_SSID     "..."   // ваш WiFi (окремо від companion-протоколу — той не зачіпається)
+#define GW_WIFI_PASS     "..."
+
+#define ALERTS_TOKEN     "..."   // Bearer-токен, отримати на devs.alerts.in.ua
+#define ALERTS_UID       279     // індекс вашої локації — див. розділ "UID" вище
+#define REGION_NAME      "Кривий Ріг"
+
+#define CHANNEL_NAME     "..."   // назва вашого власного каналу — див. розділ "Канал" нижче
+#define CHANNEL_PSK_HEX  "..."   // ваш власний PSK — див. розділ "Канал" нижче
+```
+
+## Канал
+
+**Не використовуйте PSK з цього README чи з чужого форку.** Кожен розгортає свій шлюз зі
+**своїм власним** каналом:
+
+1. У застосунку MeshCore (телефон/десктоп) створіть новий груповий канал — назвіть його
+   під своє місто (наприклад, `"Тривога <Місто>"`) і згенеруйте PSK там само.
+2. Впишіть цю назву й PSK у **свій** `CHANNEL_NAME` / `CHANNEL_PSK_HEX`.
+
+Чому це важливо, а не просто формальність:
+
+- **Різні міста — різні канали.** Якщо всі форки цього проєкту використовуватимуть один і той
+  же канал, тривоги різних міст змішаються в одному потоці, і отримувач не зможе зрозуміти,
+  до якого міста повідомлення стосується.
+- **Публічний PSK = відкриті двері для фальшивих тривог.** PSK — це весь захист каналу. Якщо
+  його опублікувати (наприклад, у README), будь-хто зі стандартним клієнтом MeshCore зможе
+  надіслати в канал фальшиву тривогу чи фальшивий відбій — а це вже питання безпеки людей, не
+  просто спаму.
+
+## Функції на пристрої
+
+- **AIRRAID** — головна OLED-сторінка: велика напис **TRYVOGA** (червоний) / **VIDBIY** (зелений),
+  час останнього успішного опитування API, стан WiFi, напруга батареї, NTP-годинник.
+- **DIAG** — діагностична сторінка (uptime, вільна пам'ять/стек у % і байтах, лічильник непрочитаних
+  повідомлень) — зручно для довготривалого спостереження за стабільністю (soak-тест).
+- Екран автоматично прокидається на будь-яке вхідне повідомлення (DM або канал) і при зміні стану
+  тривоги, навіть якщо до того згас за таймаутом бездіяльності.
+- Текст сторінок статусу/діагностики — латиницею навмисно: стандартний шрифт OLED-дисплея не має
+  кириличних гліфів. Повідомлення в самому LoRa-каналі (яке бачать на телефоні/десктопі) лишається
+  кирилицею.
+
+## Gotchas / граблі
+
+Речі, які на практиці ламали прошивку чи поведінку пристрою — якщо повторюєте збірку на своєму
+залізі, врахуйте одразу:
+
+- **Кнопку паяти на GPIO4, НЕ на GPIO12.** GPIO12 — strapping-пін (MTDI/VDD_SDIO flash voltage
+  select). Зовнішнє підтягування на ньому під час reset ламає flash-strapping — плата валиться в
+  `SPIFFS mount failed` і одразу хибно входить у CLI Rescue (сприймає плаваючий пін як затиснуту
+  кнопку). GPIO0 — теж strapping (BOOT), теж не чіпайте.
+- **Кнопка на GND потребує `INPUT_PULLUP` + debounce ~25мс.** Без цього дребезг контактів дає
+  фантомні double/triple click — кнопка поводиться нестабільно навіть при одному фізичному
+  натисканні.
+- **Час — з NTP, не з mesh-годинника.** У mesh-мережі час синхронізується між вузлами, але без
+  RTC-модуля з батарейкою це недостатньо точно для міток часу в повідомленнях тривоги — тому
+  час береться окремо через NTP.
+- **HTTP-опитування — в окремому FreeRTOS-таску, не в `loop()`.** Синхронний HTTP-запит
+  (WiFi/TLS-хендшейк) блокував основний `loop()` на секунди — кнопка й UI підвисали під час
+  кожного опитування. Опитування винесене в окрему задачу на іншому ядрі, а `loop()` лише читає
+  готовий результат з черги.
+
+## ⚠️ Застереження
+
+Це **додатковий** канал попередження, а **не заміна** офіційних сирен, застосунку "Повітряна
+тривога" чи інших офіційних джерел оповіщення. Дані надходять з неофіційного джерела
+(alerts.in.ua), можливі затримки чи збої опитування (WiFi, rate limit, недоступність API). Сам
+alerts.in.ua прямо зазначає: **не використовуйте для критичної інфраструктури**.
+**Не покладайтеся на цей пристрій як на єдине джерело інформації про повітряну тривогу.**
+
+## Оригінальний проєкт MeshCore
+
+Цей форк побудований на [MeshCore](https://github.com/meshcore-dev/MeshCore) — портативній
+C++-бібліотеці для багатострибкової маршрутизації пакетів по LoRa (та інших радіо). Архітектура,
+підтримувані плати, інші приклади прошивок (repeater, room-server, sensor тощо) — в
+оригінальному README, який збережений як [README-meshcore.md](README-meshcore.md).
