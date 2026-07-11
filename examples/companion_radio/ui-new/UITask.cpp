@@ -101,6 +101,7 @@ class HomeScreen : public UIScreen {
   enum HomePage {
 #ifdef WITH_AIR_RAID_GATEWAY
     AIRRAID,
+    DIAG,
 #endif
     FIRST,
     RECENT,
@@ -473,6 +474,31 @@ public:
 
       snprintf(buf, sizeof(buf), "%.2fV", board.getBattMilliVolts() / 1000.0f);
       display.drawTextRightAlign(display.width() - 1, 57, buf);
+    } else if (_page == HomePage::DIAG) {
+      display.setColor(DisplayDriver::YELLOW);
+      display.setTextSize(1);
+
+      unsigned long secs = millis() / 1000;
+      unsigned long days = secs / 86400;
+      unsigned int hh = (secs % 86400) / 3600;
+      unsigned int mm = (secs % 3600) / 60;
+      display.setCursor(0, 20);
+      sprintf(tmp, "Uptime: %lud %02u:%02u", days, hh, mm);
+      display.print(tmp);
+
+      display.setCursor(0, 31);
+      sprintf(tmp, "Heap: %u (%u%%)", (unsigned)ESP.getFreeHeap(),
+              (unsigned)(ESP.getFreeHeap() * 100 / ESP.getHeapSize()));
+      display.print(tmp);
+
+      display.setCursor(0, 42);
+      sprintf(tmp, "Stack: %u (%u%%)", (unsigned)air_raid_gateway.getPollTaskStackBytesFree(),
+              (unsigned)air_raid_gateway.getPollTaskStackPercentFree());
+      display.print(tmp);
+
+      display.setCursor(0, 53);
+      sprintf(tmp, "MSG: %d unread", _task->getMsgCount());
+      display.print(tmp);
 #endif
     } else if (_page == HomePage::SHUTDOWN) {
       display.setColor(DisplayDriver::GREEN);
@@ -721,7 +747,14 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
   setCurrScreen(msg_preview);
 
   if (_display != NULL) {
+#ifdef WITH_AIR_RAID_GATEWAY
+    // hasConnection() is meaningless here (ArduinoSerialInterface::isConnected() is
+    // hardcoded true). Gateway is only ever subscribed to our own low-traffic
+    // channel(s), never a chatty public one, so waking on any inbound message is safe.
+    if (!_display->isOn()) {
+#else
     if (!_display->isOn() && !hasConnection()) {
+#endif
       _display->turnOn();
     }
     if (_display->isOn()) {

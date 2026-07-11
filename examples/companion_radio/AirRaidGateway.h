@@ -34,6 +34,10 @@ public:
   bool isWifiConnected() const { return _wifi_connected_cached; }
   int getLastHttpCode() const { return _last_http_code; }
   long secondsSinceLastSuccess() const;   // -1 if never succeeded yet
+  UBaseType_t getPollTaskStackBytesFree() const {
+    return _poll_task ? uxTaskGetStackHighWaterMark(_poll_task) : 0;
+  }
+  uint8_t getPollTaskStackPercentFree() const;   // 0-100, relative to ALERT_POLL_TASK_STACK
 
 private:
   enum AlertState { STATE_UNKNOWN, STATE_CLEAR, STATE_ALERT };

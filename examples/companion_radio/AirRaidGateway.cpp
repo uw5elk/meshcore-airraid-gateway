@@ -67,6 +67,10 @@ long AirRaidGateway::secondsSinceLastSuccess() const {
   return (long)((millis() - _last_success_at) / 1000);
 }
 
+uint8_t AirRaidGateway::getPollTaskStackPercentFree() const {
+  return _poll_task ? (uint8_t)(getPollTaskStackBytesFree() * 100 / ALERT_POLL_TASK_STACK) : 0;
+}
+
 void AirRaidGateway::registerChannel() {
   uint8_t psk[16];
   if (!mesh::Utils::fromHex(psk, sizeof(psk), CHANNEL_PSK_HEX)) {
