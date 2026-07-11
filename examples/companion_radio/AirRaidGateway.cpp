@@ -15,6 +15,11 @@
 #define ALERT_BACKOFF_MAX_MS      300000    // cap for 429 backoff
 #define ALERT_HTTP_TIMEOUT_MS       5000
 #define ALERT_WIFI_RETRY_MS        10000
+#define ALERT_WIFI_DOWN_IDLE_MS      500    // task sleep between reconnect attempts while WiFi is down
+#define ALERT_POLL_IDLE_MS           200    // task sleep between "not due yet" checks
+#define ALERT_POLL_TASK_STACK      10240    // bytes; sized via uxTaskGetStackHighWaterMark() logging below
+#define ALERT_POLL_TASK_CORE           0    // WiFi driver task already lives on core 0; keep loopTask (core 1) free
+#define ALERT_STACK_LOG_EVERY_N_POLLS 20    // throttle MESH_DEBUG stack watermark logging
 
 // Anything below this means NTP hasn't synced yet (fresh boot reads back an
 // implausible epoch) - never print a bogus timestamp in an alert message.
@@ -37,6 +42,10 @@ void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
   _next_poll_at = millis();  // poll as soon as WiFi comes up
   registerChannel();
 
+  // One-time, non-blocking kick-off from the main thread. From this point on,
+  // WiFi.begin()/.disconnect()/.status() are only ever called from the
+  // background poll task (see pollTaskLoop()) - exactly one thread owns the
+  // WiFi connection lifecycle.
   WiFi.mode(WIFI_STA);
   WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
   MESH_DEBUG_PRINTLN("AirRaidGateway: connecting to WiFi '%s'...", GW_WIFI_SSID);
@@ -45,10 +54,12 @@ void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
   // own WiFi - independent of the mesh clock. getRTCClock() stays UTC, synced
   // from advert packets, and is still used only for the wire frame timestamp.
   configTzTime("EET-2EEST,M3.5.0/1,M10.5.0/1", "pool.ntp.org", "time.google.com");
-}
 
-bool AirRaidGateway::isWifiConnected() const {
-  return WiFi.status() == WL_CONNECTED;
+  if (_poll_task == NULL) {
+    _result_queue = xQueueCreate(1, sizeof(PollSnapshot));
+    xTaskCreatePinnedToCore(pollTaskTrampoline, "AirRaidPoll", ALERT_POLL_TASK_STACK,
+                            this, 1, &_poll_task, ALERT_POLL_TASK_CORE);
+  }
 }
 
 long AirRaidGateway::secondsSinceLastSuccess() const {
@@ -88,84 +99,20 @@ void AirRaidGateway::registerChannel() {
   }
 }
 
+// ---- Main-thread side: drains the mailbox, does all Mesh/UI side effects ----
+
 void AirRaidGateway::loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    if (millis() - _last_wifi_reconnect_attempt > ALERT_WIFI_RETRY_MS) {
-      MESH_DEBUG_PRINTLN("AirRaidGateway: WiFi down, reconnecting...");
-      WiFi.disconnect();
-      WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
-      _last_wifi_reconnect_attempt = millis();
-    }
-    return;
+  if (_result_queue == NULL) return;
+
+  PollSnapshot snap;
+  if (xQueueReceive(_result_queue, &snap, 0) != pdTRUE) return;   // nothing new - non-blocking
+
+  _wifi_connected_cached = snap.wifi_connected;
+  if (snap.has_http_result) {
+    _last_http_code = snap.http_code;
+    if (snap.success) _last_success_at = millis();
   }
-
-  if ((long)(millis() - _next_poll_at) < 0) return;  // not due yet
-  _next_poll_at = millis() + _poll_interval_ms;
-
-  poll();
-}
-
-void AirRaidGateway::poll() {
-  WiFiClientSecure client;
-  client.setInsecure();   // TODO(v2): pin/verify alerts.in.ua cert
-
-  HTTPClient http;
-  http.setConnectTimeout(ALERT_HTTP_TIMEOUT_MS);
-  http.setTimeout(ALERT_HTTP_TIMEOUT_MS);
-
-  static const char* url = "https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json";
-  if (!http.begin(client, url)) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: http.begin() failed");
-    _last_http_code = -1;
-    return;
-  }
-  http.addHeader("Authorization", "Bearer " ALERTS_TOKEN);
-
-  int code = http.GET();
-  _last_http_code = code;
-
-  if (code == 200) {
-    String body = http.getString();
-    _poll_interval_ms = ALERT_POLL_INTERVAL_MS;  // clear any backoff
-    _last_success_at = millis();
-
-    // Body is a JSON string literal, e.g. "   NNN...A...N" - strip the surrounding quotes
-    // (if present) so index 0 of the content lines up with UID 0. Verified against live data:
-    // UID 9 (Dnipropetrovsk oblast) and UID 279 (Kryvyi Rih) both matched known live state at
-    // this 0-based offset.
-    int start = 0;
-    int content_len = (int)body.length();
-    if (content_len >= 2 && body[0] == '"' && body[content_len - 1] == '"') {
-      start = 1;
-      content_len -= 2;
-    }
-
-    if (content_len <= ALERTS_UID) {
-      // Truncated/short/unexpected response - do NOT touch _state, so we never send a false
-      // all-clear (or false alert) just because this one poll came back malformed.
-      MESH_DEBUG_PRINTLN("AirRaidGateway: response too short (%d chars, need > %d) - ignoring, keeping previous state", content_len, ALERTS_UID);
-    } else {
-      char c = body[start + ALERTS_UID];
-      AlertState new_state = STATE_UNKNOWN;
-      if (c == 'A' || c == 'P') new_state = STATE_ALERT;
-      else if (c == 'N') new_state = STATE_CLEAR;
-
-      if (new_state == STATE_UNKNOWN) {
-        MESH_DEBUG_PRINTLN("AirRaidGateway: unexpected char '%c' at index %d - ignoring, keeping previous state", c, ALERTS_UID);
-      } else {
-        handleState(new_state);
-      }
-    }
-  } else if (code == 401) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP 401 - bad/expired token");
-  } else if (code == 429) {
-    _poll_interval_ms = min(_poll_interval_ms * 2, (unsigned long)ALERT_BACKOFF_MAX_MS);
-    MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP 429 - rate limited, backing off to %lums", _poll_interval_ms);
-  } else {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP error %d", code);
-  }
-
-  http.end();
+  if (snap.has_state) handleState(snap.state);
 }
 
 void AirRaidGateway::handleState(AlertState new_state) {
@@ -227,6 +174,115 @@ void AirRaidGateway::sendChannelText(const char* text) {
   i += text_len;
 
   _mesh->injectChannelText(frame, i);
+}
+
+// ---- Background-task side: WiFi + HTTP only, never touches _mesh/_ui ----
+
+void AirRaidGateway::pollTaskTrampoline(void* param) {
+  static_cast<AirRaidGateway*>(param)->pollTaskLoop();
+}
+
+void AirRaidGateway::pollTaskLoop() {
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      if (millis() - _last_wifi_reconnect_attempt > ALERT_WIFI_RETRY_MS) {
+        MESH_DEBUG_PRINTLN("AirRaidGateway: WiFi down, reconnecting...");
+        WiFi.disconnect();
+        WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
+        _last_wifi_reconnect_attempt = millis();
+      }
+      PollSnapshot snap = { false, STATE_UNKNOWN, false, false, 0, false };
+      xQueueOverwrite(_result_queue, &snap);
+      vTaskDelay(pdMS_TO_TICKS(ALERT_WIFI_DOWN_IDLE_MS));
+      continue;
+    }
+
+    if ((long)(millis() - _next_poll_at) < 0) {
+      vTaskDelay(pdMS_TO_TICKS(ALERT_POLL_IDLE_MS));
+      continue;
+    }
+    _next_poll_at = millis() + _poll_interval_ms;
+
+    pollOnce();
+  }
+}
+
+void AirRaidGateway::pollOnce() {
+  PollSnapshot snap = { false, STATE_UNKNOWN, true, false, 0, true };
+
+  WiFiClientSecure client;
+  client.setInsecure();   // TODO(v2): pin/verify alerts.in.ua cert
+
+  HTTPClient http;
+  http.setConnectTimeout(ALERT_HTTP_TIMEOUT_MS);
+  http.setTimeout(ALERT_HTTP_TIMEOUT_MS);
+
+  static const char* url = "https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json";
+  if (!http.begin(client, url)) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: http.begin() failed");
+    snap.http_code = -1;
+    xQueueOverwrite(_result_queue, &snap);
+    return;
+  }
+  http.addHeader("Authorization", "Bearer " ALERTS_TOKEN);
+
+  int code = http.GET();
+  snap.http_code = code;
+
+  if (code == 200) {
+    String body = http.getString();
+    _poll_interval_ms = ALERT_POLL_INTERVAL_MS;  // clear any backoff
+    snap.success = true;
+
+    // Body is a JSON string literal, e.g. "   NNN...A...N" - strip the surrounding quotes
+    // (if present) so index 0 of the content lines up with UID 0. Verified against live data:
+    // UID 9 (Dnipropetrovsk oblast) and UID 279 (Kryvyi Rih) both matched known live state at
+    // this 0-based offset.
+    int start = 0;
+    int content_len = (int)body.length();
+    if (content_len >= 2 && body[0] == '"' && body[content_len - 1] == '"') {
+      start = 1;
+      content_len -= 2;
+    }
+
+    if (content_len <= ALERTS_UID) {
+      // Truncated/short/unexpected response - do NOT report a state, so the main
+      // thread never treats this as a false all-clear (or false alert).
+      MESH_DEBUG_PRINTLN("AirRaidGateway: response too short (%d chars, need > %d) - ignoring, keeping previous state", content_len, ALERTS_UID);
+    } else {
+      char c = body[start + ALERTS_UID];
+      if (c == 'A' || c == 'P') {
+        snap.has_state = true;
+        snap.state = STATE_ALERT;
+      } else if (c == 'N') {
+        snap.has_state = true;
+        snap.state = STATE_CLEAR;
+      } else {
+        MESH_DEBUG_PRINTLN("AirRaidGateway: unexpected char '%c' at index %d - ignoring, keeping previous state", c, ALERTS_UID);
+      }
+    }
+  } else if (code == 401) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP 401 - bad/expired token");
+  } else if (code == 429) {
+    _poll_interval_ms = min(_poll_interval_ms * 2, (unsigned long)ALERT_BACKOFF_MAX_MS);
+    MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP 429 - rate limited, backing off to %lums", _poll_interval_ms);
+  } else {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: HTTP error %d", code);
+  }
+
+  http.end();
+
+  snap.wifi_connected = true;  // we only get here when WiFi.status() == WL_CONNECTED
+  xQueueOverwrite(_result_queue, &snap);
+
+  // Stack sizing aid: throttled so it doesn't spam serial every 15s. Once a
+  // safe/comfortable ALERT_POLL_TASK_STACK is picked from real readings, this
+  // logging (and the counter) can be dropped.
+  if ((++_poll_count_for_stack_log % ALERT_STACK_LOG_EVERY_N_POLLS) == 1) {
+    UBaseType_t words_free = uxTaskGetStackHighWaterMark(NULL);
+    MESH_DEBUG_PRINTLN("AirRaidGateway: poll task stack high-water mark = %u bytes free (of %d)",
+                        (unsigned)words_free, ALERT_POLL_TASK_STACK);
+  }
 }
 
 #endif

@@ -2,11 +2,11 @@
 
 #define MULTI_CLICK_WINDOW_MS  280
 
-MomentaryButton::MomentaryButton(int8_t pin, int long_press_millis, bool reverse, bool pulldownup, bool multiclick) { 
+MomentaryButton::MomentaryButton(int8_t pin, int long_press_millis, bool reverse, bool pulldownup, bool multiclick, int debounce_ms) {
   _pin = pin;
   _reverse = reverse;
   _pull = pulldownup;
-  down_at = 0; 
+  down_at = 0;
   prev = _reverse ? HIGH : LOW;
   cancel = 0;
   _long_millis = long_press_millis;
@@ -15,6 +15,9 @@ MomentaryButton::MomentaryButton(int8_t pin, int long_press_millis, bool reverse
   _last_click_time = 0;
   _multi_click_window = multiclick ? MULTI_CLICK_WINDOW_MS : 0;
   _pending_click = false;
+  _debounce_ms = debounce_ms;
+  _last_raw_level = prev;
+  _last_raw_change_at = 0;
 }
 
 MomentaryButton::MomentaryButton(int8_t pin, int long_press_millis, int analog_threshold) {
@@ -30,6 +33,9 @@ MomentaryButton::MomentaryButton(int8_t pin, int long_press_millis, int analog_t
   _last_click_time = 0;
   _multi_click_window = MULTI_CLICK_WINDOW_MS;
   _pending_click = false;
+  _debounce_ms = 0;
+  _last_raw_level = prev;
+  _last_raw_change_at = 0;
 }
 
 void MomentaryButton::begin() {
@@ -66,7 +72,22 @@ int MomentaryButton::check(bool repeat_click) {
   if (_pin < 0) return BUTTON_EVENT_NONE;
 
   int event = BUTTON_EVENT_NONE;
-  int btn = _threshold > 0 ? (analogRead(_pin) < _threshold) : digitalRead(_pin);
+  int raw = _threshold > 0 ? (analogRead(_pin) < _threshold) : digitalRead(_pin);
+
+  int btn;
+  if (_debounce_ms > 0) {
+    unsigned long now = millis();
+    if (raw != _last_raw_level) {
+      _last_raw_level = raw;
+      _last_raw_change_at = now;
+    }
+    // Only accept the raw level once it's been stable for _debounce_ms -
+    // otherwise keep reporting the last accepted (pre-bounce) level.
+    btn = ((unsigned long)(now - _last_raw_change_at) >= (unsigned long)_debounce_ms) ? _last_raw_level : prev;
+  } else {
+    btn = raw;
+  }
+
   if (btn != prev) {
     if (isPressed(btn)) {
       down_at = millis();

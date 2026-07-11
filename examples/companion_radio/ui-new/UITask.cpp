@@ -99,6 +99,9 @@ public:
 
 class HomeScreen : public UIScreen {
   enum HomePage {
+#ifdef WITH_AIR_RAID_GATEWAY
+    AIRRAID,
+#endif
     FIRST,
     RECENT,
     RADIO,
@@ -110,24 +113,9 @@ class HomeScreen : public UIScreen {
 #if UI_SENSORS_PAGE == 1
     SENSORS,
 #endif
-#ifdef WITH_AIR_RAID_GATEWAY
-    AIRRAID,
-#endif
     SHUTDOWN,
     Count    // keep as last
   };
-
-#ifdef WITH_AIR_RAID_GATEWAY
-  // Button cycle on air-raid gateway boards: only AIRRAID (status),
-  // ADVERT (manual advert) RADIO (link diag) and SHUTDOWN (only manual
-  // power-off path) are reachable. The rest of the enum still exists
-  // (e.g. for GPS/SENSORS builds combined with this flag) but is skipped
-  // when cycling with the button.
-  static bool isPageInCycle(uint8_t page) {
-    return page == HomePage::AIRRAID || page == HomePage::ADVERT ||
-           page == HomePage::RADIO   || page == HomePage::SHUTDOWN;
-  }
-#endif
 
   UITask* _task;
   mesh::RTCClock* _rtc;
@@ -501,23 +489,11 @@ public:
 
   bool handleInput(char c) override {
     if (c == KEY_LEFT || c == KEY_PREV) {
-#ifdef WITH_AIR_RAID_GATEWAY
-      do {
-        _page = (_page + HomePage::Count - 1) % HomePage::Count;
-      } while (!isPageInCycle(_page));
-#else
       _page = (_page + HomePage::Count - 1) % HomePage::Count;
-#endif
       return true;
     }
     if (c == KEY_NEXT || c == KEY_RIGHT) {
-#ifdef WITH_AIR_RAID_GATEWAY
-      do {
-        _page = (_page + 1) % HomePage::Count;
-      } while (!isPageInCycle(_page));
-#else
       _page = (_page + 1) % HomePage::Count;
-#endif
       if (_page == HomePage::RECENT) {
         _task->showAlert("Recent adverts", 800);
       }
@@ -847,10 +823,12 @@ void UITask::loop() {
     c = checkDisplayOn(KEY_NEXT);
   } else if (ev == BUTTON_EVENT_LONG_PRESS) {
     c = handleLongPress(KEY_ENTER);
+#ifndef WITH_AIR_RAID_GATEWAY
   } else if (ev == BUTTON_EVENT_DOUBLE_CLICK) {
     c = handleDoubleClick(KEY_PREV);
   } else if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
     c = handleTripleClick(KEY_SELECT);
+#endif
   }
 #endif
 #if defined(PIN_USER_BTN_ANA)
