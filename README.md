@@ -115,7 +115,7 @@ pio run -e LilyGo_TLora_V2_1_1_6_airraid
 
 ## Функції на пристрої
 
-- **AIRRAID** — головна OLED-сторінка: 
+- **AIRRAID** — головна OLED-сторінка:
  напис **TRYVOGA** / **VIDBIY**,
   час останнього успішного опитування API, стан WiFi, напруга батареї, NTP-годинник.
 - **DIAG** — діагностична сторінка (uptime, вільна пам'ять/стек у % і байтах, лічильник непрочитаних
@@ -167,7 +167,19 @@ C++-бібліотеці для багатострибкової маршрут�
 саморобну плату ESP32-DEV + окремий модуль E22 (SX1268), зібрану за схемою
 [sh123/esp32_loraprs](https://github.com/sh123/esp32_loraprs) (`variants/esp32dev_e22`).
 
+**Це звичайний MeshCore BT Companion, БЕЗ функціоналу повітряних тривог.** Середовище
+`Esp32_loraprs_E22_companion_radio_ble` збирає стоковий `examples/companion_radio` без
+`WITH_AIR_RAID_GATEWAY` — просто радіоміст по Bluetooth до застосунку MeshCore, без опитування
+alerts.in.ua, без сторінок AIRRAID/DIAG тощо (їх і не може бути — на цій платі немає дисплея).
+Щоб додати сюди air-raid функціонал, потрібно окремо прописати `-D WITH_AIR_RAID_GATEWAY` у
+`platformio.ini` цього variant і завести свій `AirRaidGatewayConfig.h` (розділ Configuration
+вище) — але це вже не зроблено в цьому variant "з коробки".
+
 Збірка:
+```
+pio run -e Esp32_loraprs_E22_companion_radio_ble -t upload
+```
+
 **Піни** (NSS=5, RESET=27, DIO1=12, BUSY=14, RXEN=32, TXEN=33, MOSI=23, SCK=18, MISO=19) —
 звірені з реальною KiCad-схемою проєкту esp32_loraprs (`extras/schematics/esp32dev/lora_tracker.sch`
 + netlist). П'ять пінів (RESET/DIO1/BUSY/RXEN/TXEN/MOSI) підключені жорстко — підтверджено
