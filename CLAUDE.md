@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MeshCore is a portable C++ library for multi-hop LoRa packet routing on embedded devices (ESP32, nRF52, RP2040, STM32). `src/` is the core protocol library; `examples/` contains the firmware applications built on top of it; `variants/` contains per-board PlatformIO configs that combine a board + an example into a flashable firmware.
 
+**This repo is a fork.** On top of upstream MeshCore it adds an air-raid alert gateway (see "The air-raid gateway" below). Upstream's own README is preserved as `README-meshcore.md`; the root `README.md` documents the fork.
+
 ## Build system
 
 This is a PlatformIO project (`platformio.ini` at the root, extended by every `variants/*/platformio.ini`). There is no CMake/Makefile workflow — always go through `pio`.
@@ -13,6 +15,12 @@ This is a PlatformIO project (`platformio.ini` at the root, extended by every `v
 Build a specific firmware target (env names follow `<Board>_<example>[_<variant>]`, e.g. `Heltec_v3_repeater`, `RAK_4631_companion_radio_ble`):
 ```
 pio run -e Heltec_v3_repeater
+```
+
+The two envs that matter in this fork:
+```
+pio run -e LilyGo_TLora_V2_1_1_6_airraid              # the air-raid gateway
+pio run -e Esp32_loraprs_E22_companion_radio_ble      # plain BT companion on DIY E22 hardware
 ```
 
 List all available environments (there are 100+, one per board/example combo):
@@ -43,7 +51,7 @@ There is no lint/format check step in CI — `.clang-format` exists (2-space ind
 
 ### CI
 
-- `pr-build-check.yml` compiles a representative matrix of environments (ESP32-S3, nRF52, RP2040, STM32, ESP32-C6, SX1276) on every PR touching `src/`, `examples/`, `variants/`, or `platformio.ini`. If you change core code, sanity-check against at least one board of each MCU family when possible.
+- `pr-build-check.yml` compiles a representative matrix of environments (ESP32-S3, nRF52, RP2040, STM32, ESP32-C6, SX1276) on every PR touching `src/`, `examples/`, `variants/`, or `platformio.ini`. Neither of this fork's two envs is in that matrix — build them locally before pushing.
 - `run-unit-tests.yml` runs `pio test -e native -vv`.
 
 ## Architecture
@@ -78,28 +86,56 @@ Each `variants/<name>/platformio.ini` defines a base board section (pins, radio 
 
 Frame and packet size limits (`MAX_FRAME_SIZE`, `MAX_PACKET_PAYLOAD`, `MAX_PATH_SIZE`, contact/channel counts like `MAX_CONTACTS`/`MAX_GROUP_CHANNELS`) are set via `-D` build flags per variant/env, not hardcoded — check the relevant `platformio.ini` env before assuming a value.
 
-## Current task: air-raid alert gateway
+Radio parameters (`LORA_FREQ`, `LORA_BW`, `LORA_SF`, `LORA_CR`, `LORA_TX_POWER`) work the same way. On `companion_radio` these are only the first-boot defaults — the paired phone/desktop app writes them into the stored prefs, so a companion build does not need them pinned per variant.
 
-Air-raid alert gateway on top of `companion_radio`, targeting a LilyGo T3 LoRa32 v1.6.1 board (SX1276 radio, no TCXO), running as a Companion-role node (not repeater/room-server).
+## The air-raid gateway
 
-**Alert source:** polls alerts.in.ua, endpoint `https://api.alerts.in.ua/v1/iot/active_air_raid_alerts/9.json` (uid 9 = Dnipropetrovsk oblast — region-level, chosen as the reliable option after uid 279, an unverified Kryvyi Rih city/hromada guess, turned out to be invalid and returned HTTP 404). Response is a single-char JSON string: `"A"`/`"P"` = alert, `"N"` = all-clear. Poll interval 15s (service hard limit is 12 req/min). Auth is `Authorization: Bearer <token>` — confirmed against `devs.alerts.in.ua` that this header form (not just `?token=`) is fully supported; the documented error codes are only 401 (bad/expired token) and 429 (rate limit) — no 404, which is what pointed at the uid being wrong rather than the token/header.
+An air-raid alert gateway layered on top of `companion_radio`, running as a Companion-role node (not repeater/room-server). User-facing docs are in the root `README.md`; this section covers what a code change needs to know.
 
-**Implemented and committed:**
-- `MyMesh::injectChannelText(const uint8_t* frame, size_t len)` (`examples/companion_radio/MyMesh.h`/`.cpp`, commit `4451966b`) — clamps `len` to `MAX_FRAME_SIZE`, copies into `cmd_frame`, invokes `handleCmdFrame(len)`. Injection point for pushing a group-channel text alert without going through the normal serial/BLE frame path. Do not modify this method.
-- `examples/companion_radio/AirRaidGateway.h`/`.cpp` (commit `8ccb4822`) — polls the endpoint above over `WiFiClientSecure`/`HTTPClient`, dedupes on state change only, stays silent on the first reading after boot, backs off (doubling, capped at 5 min) on HTTP 429, logs on HTTP 401.
-- **Dedicated channel, not Public** (commit `a3c9aaab`): the gateway registers its own group channel, `"Тривога KR"`, at slot **1** (slot 0 stays `"Public"`, always re-added by `MyMesh::begin()` on every boot) — see `AirRaidGateway::registerChannel()`. The 16-byte PSK is baked into `AirRaidGatewayConfig.h` as hex (`CHANNEL_PSK_HEX`) and converted via `mesh::Utils::fromHex()`, then written directly via the public `BaseChatMesh::setChannel()` API (same mechanism the wire protocol's `CMD_SET_CHANNEL` uses — raw secret bytes, not base64). Registration happens in memory only, every boot (idempotent check against the existing slot first) — **not persisted to flash**, since `MyMesh::saveChannels()` is private and this was a deliberate choice to avoid touching `MyMesh.h`. `sendChannelText()` targets the resolved `_channel_idx`, not a hardcoded index.
-- `examples/companion_radio/AirRaidGatewayConfig.h` — config header: `GW_WIFI_SSID`/`GW_WIFI_PASS` (deliberately not `WIFI_SSID`/`WIFI_PASS`, since `main.cpp` already uses `WIFI_SSID`/`WIFI_PWD` to switch the companion serial protocol itself onto WiFi/TCP transport), `ALERTS_TOKEN`, `ALERTS_UID=9`, `REGION_NAME="Дніпропетровська обл."`, `CHANNEL_NAME="Тривога KR"`, `CHANNEL_PSK_HEX`. **This file is in `.gitignore` and must never be committed** — it holds the real alerts.in.ua Bearer token, WiFi credentials, and the channel PSK. Verified: never appears in git history on any branch.
-- **OLED status page** (commit `fa6806e2`): a new `HomePage::AIRRAID` page in `examples/companion_radio/ui-new/UITask.cpp`'s `HomeScreen` (feature-flagged like the existing GPS/SENSORS pages) shows title `"Tryvoga KR"`, big state text `"TRYVOGA"` (red) / `"VIDBIY"` (green), plus `API: Xs ago` (or the last HTTP error code), `WiFi: OK`/`---`, and battery voltage. Latin, not Cyrillic, on purpose — the OLED's default Adafruit_GFX font has no Cyrillic glyphs (confirmed via `DisplayDriver::translateUTF8ToBlocks()`, which replaces any non-ASCII byte with a solid block char). On every alert/all-clear transition, `AirRaidGateway` also fires a ~5s `UITask::showAlert("TRYVOGA"/"VIDBIY", 5000)` toast, for the same font reason. The group-channel message text (via `injectChannelText`) is unaffected — it still goes out in Cyrillic with emoji, since that's rendered on the phone/desktop app, not this OLED. New getters on `AirRaidGateway` (`hasBaseline()`, `isAlertActive()`, `isWifiConnected()`, `getLastHttpCode()`, `secondsSinceLastSuccess()`) back the page; `begin()` now optionally takes a `UITask*` (passed from `main.cpp` as `&ui_task` under `#ifdef DISPLAY_CLASS`).
-- `main.cpp` changes wiring `AirRaidGateway::begin()`/`loop()` into `setup()`/`loop()`, gated behind `#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)` — doesn't affect any of the other 100+ companion_radio build environments.
-- Build env `LilyGo_TLora_V2_1_1_6_airraid` (`variants/lilygo_tlora_v2_1/platformio.ini`) — extends the existing `LilyGo_TLora_V2_1_1_6` base section (same SX1276 chip/pins), USB companion variant (no `BLE_PIN_CODE`, no `WIFI_SSID`). Radio set via build flags: `LORA_FREQ=433.650`, `LORA_BW=62.5`, `LORA_SF=8`, `LORA_CR=8` (power stays at the base section's inherited `LORA_TX_POWER=20`), plus `-D WITH_AIR_RAID_GATEWAY` to enable the feature.
-- Pushed to a personal fork remote named `mine` (`github.com/uw5elk/meshcore-airraid-gateway`, branch `main`). `origin` remains the upstream `meshcore-dev/MeshCore` repo and was never pushed to.
+**Target hardware:** LilyGo T3 LoRa32 v1.6.1 (SX1276, no TCXO), 433 MHz.
 
-**Hardware bring-up bug (found and fixed on real hardware):** the board consistently booted straight into MeshCore's "CLI Rescue" mode (`E (121) SPIFFS: mount failed, -10025` immediately followed by `========= CLI Rescue =========`), even after erasing flash and reflashing. Root cause: `PIN_USER_BTN` was set to GPIO0, then GPIO12 (thinking it was the real button pin) — both are ESP32 **strapping pins** (GPIO0 = BOOT, GPIO12 = MTDI/VDD_SDIO flash voltage select). An external pull on either during reset corrupts flash-voltage strapping (explaining the SPIFFS failure) and simultaneously misreads as a held button within `UITask`'s 8-second CLI Rescue window (`handleLongPress()` in `ui-new/UITask.cpp`) — `enterCLIRescue()` (`MyMesh.cpp`) is the *only* place `_cli_rescue` is set, and it is purely button-driven; there is no boot-loop/watchdog-triggered auto-rescue anywhere in this codebase. Diagnostic isolation: setting `PIN_USER_BTN=36` (a supposedly "safe" floating input-only pin) still failed, because `MomentaryButton` (`target.cpp`) never enables an internal pull (`pulldownup` arg defaults to `false`), so any physically-unwired pin floats undefined. The clean fix, confirmed on-device: **`PIN_USER_BTN=-1`**, the codebase's existing convention (also used by `xiao_s3`/`rak3112`/`lilygo_t_impulse_plus`) for "no button" — `MomentaryButton` skips `pinMode()`/`digitalRead()` entirely when `_pin < 0`. Board now boots clean, no SPIFFS error, no CLI Rescue. **The board's real physical button pin is still unknown/unresolved** — button is deliberately disabled for now.
-- Temporarily added `-D MESH_DEBUG=1` to the env for this bring-up/diagnostic session (to see `AirRaidGateway`'s `MESH_DEBUG_PRINTLN` logs over serial) — **must be turned back off** once diagnostics are done; there's a `; NOTE: DO NOT ENABLE` warning already next to the (still-disabled) `MESH_PACKET_LOGGING` flag in the same env for context.
+**Alert source:** the bulk endpoint `https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json` — note there is **no uid in the path** (the older per-region `.../active_air_raid_alerts/<uid>.json` form is what returns 404 now). The response body is a single JSON string with one character per location (`N` = clear, `A`/`P` = alert). `ALERTS_UID` is therefore a **0-based index into that string**, not a URL component; `pollOnce()` strips the surrounding quotes before indexing. Known-good values: `279` = Kryvyi Rih city/hromada, `9` = Dnipropetrovsk oblast. Auth is `Authorization: Bearer <token>`; the service documents only 401 (bad/expired token) and 429 (rate limit). Poll interval 15 s (service cap is 12 req/min), doubling backoff capped at 5 min on 429.
 
-**Build status: SUCCESS, and now physically flash-verified.** Board boots clean (confirmed via `pio device monitor`), registers the `"Тривога KR"` channel at idx 1, connects to WiFi, and polls alerts.in.ua — confirmed working end-to-end at the region level (uid 9 returns `"P"`).
+**Threading model.** `AirRaidGateway` runs the WiFi/HTTP work on its own FreeRTOS task pinned to **core 0** (where the WiFi driver already lives), so a TLS handshake never blocks `loopTask` on core 1. The two threads communicate **only** through a length-1 mailbox queue (`xQueueOverwrite`/`xQueueReceive`) carrying a `PollSnapshot`. Mesh and UI objects are not thread-safe: `injectChannelText()`, `UITask` calls and all `_state` handling happen exclusively on the main thread, from `loop()`, after draining the queue. **Keep this split** — do not touch `_mesh`/`_ui` from `pollTaskLoop()`/`pollOnce()`.
 
-**Next step:** turn `MESH_DEBUG` back off, decide on/fix the real physical button pin (currently disabled via `PIN_USER_BTN=-1`), and confirm an actual alert/all-clear message is received in the `"Тривога KR"` channel by a phone/desktop client during a real state transition.
+**Key pieces:**
+- `MyMesh::injectChannelText(const uint8_t*, size_t)` (`examples/companion_radio/MyMesh.h`/`.cpp`) — clamps `len` to `MAX_FRAME_SIZE`, copies into `cmd_frame`, calls `handleCmdFrame(len)`. Injection point for pushing a group-channel text alert without going through the serial/BLE frame path.
+- `examples/companion_radio/AirRaidGateway.h`/`.cpp` — polling, state dedupe (message only on change), silent baseline on the first reading after boot.
+- **Dedicated channel, not Public.** `registerChannel()` writes the channel at slot **1** (slot 0 is always `"Public"`, re-added by `MyMesh::begin()` every boot) via the public `BaseChatMesh::setChannel()`. The 16-byte PSK comes from `CHANNEL_PSK_HEX` through `mesh::Utils::fromHex()`. Registration is **in-memory only, re-done every boot** (idempotent check first) — deliberately not persisted, to avoid touching the private `MyMesh::saveChannels()`.
+- `examples/companion_radio/AirRaidGatewayConfig.h` — `GW_WIFI_SSID`/`GW_WIFI_PASS` (deliberately *not* `WIFI_SSID`/`WIFI_PWD`, which `main.cpp` already uses to move the companion protocol itself onto WiFi/TCP), `ALERTS_TOKEN`, `ALERTS_UID`, `REGION_NAME`, `CHANNEL_NAME`, `CHANNEL_PSK_HEX`. **In `.gitignore`, must never be committed** — holds the real token, WiFi credentials and channel PSK. Verified absent from git history on all branches.
+- **OLED pages** (`ui-new/UITask.cpp`): `HomePage::AIRRAID` (state, seconds since last successful poll or last HTTP error, WiFi, battery) and `HomePage::DIAG` (uptime, free heap/stack, unread count), both feature-flagged like the existing GPS/SENSORS pages. Text is Latin on purpose — `DisplayDriver::translateUTF8ToBlocks()` replaces any non-ASCII byte with a block glyph, so Cyrillic is unrenderable in the default Adafruit_GFX font. The channel message itself stays Cyrillic (rendered by the phone/desktop app, not the OLED).
+- `main.cpp` wires `begin()`/`loop()` in, gated behind `#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)`, so the other 100+ companion_radio envs are unaffected.
+- `MomentaryButton` gained an optional trailing `debounce_ms` constructor arg (default `0` = previous behaviour for every other board); the gateway uses ~25 ms.
+
+**Build env:** `LilyGo_TLora_V2_1_1_6_airraid` in `variants/lilygo_tlora_v2_1/platformio.ini`, extending the existing `LilyGo_TLora_V2_1_1_6` base. Sets `LORA_FREQ=433.650`, `LORA_BW=62.5`, `LORA_SF=8`, `LORA_CR=8` (TX power 20 inherited), `PIN_USER_BTN=4` + `PIN_USER_BTN_PULLUP=true`, and `-D WITH_AIR_RAID_GATEWAY`. `MESH_DEBUG` and `MESH_PACKET_LOGGING` are intentionally **off** — there are `; NOTE: DO NOT ENABLE` markers on them; re-enable only for a bring-up session and turn them back off before pushing.
+
+**Status:** working on hardware — boots clean, registers the channel, connects to WiFi, polls the API, and delivers alerts to the channel.
+
+### Strapping-pin trap (resolved, do not regress)
+
+The board booted straight into CLI Rescue (`SPIFFS: mount failed, -10025` then `========= CLI Rescue =========`) whenever `PIN_USER_BTN` was GPIO0 or GPIO12. Both are ESP32 **strapping pins** (GPIO0 = BOOT, GPIO12 = MTDI/VDD_SDIO flash voltage select): an external pull during reset corrupts flash-voltage strapping *and* reads as a held button inside `UITask`'s 8-second rescue window. `enterCLIRescue()` is purely button-driven — there is no boot-loop or watchdog auto-rescue anywhere in this codebase. GPIO36 also failed, because `MomentaryButton` enables no internal pull unless asked, so an unwired pin floats. Resolved by moving the button to **GPIO4** with `PIN_USER_BTN_PULLUP=true`. `PIN_USER_BTN=-1` is the codebase convention for "no button" if one is ever needed.
+
+## The `esp32_loraprs_e22` variant
+
+A second, unrelated variant: `variants/esp32_loraprs_e22/` targets a DIY ESP32-DEV + EBYTE E22 (SX1268) board wired per [sh123/esp32_loraprs](https://github.com/sh123/esp32_loraprs) (`variants/esp32dev_e22`). Its `target.h`/`target.cpp` are copies of upstream's `variants/generic-e22` (the pins come from build flags, so the glue is generic).
+
+**It builds a stock BT Companion — `WITH_AIR_RAID_GATEWAY` is deliberately not set**, so no alert polling and no AIRRAID/DIAG pages (that board has no display).
+
+Pins were traced against the esp32_loraprs KiCad schematic (`extras/schematics/esp32dev/lora_tracker.sch` + netlist): RESET/DIO1/BUSY/RXEN/TXEN/MOSI are hard-wired, while **NSS/SCK/MISO route through solder jumpers JP1/JP2/JP3** (the project's 36-pin vs 38-pin board option). The configured 5/18/19 is the standard-ESP32-VSPI side of those jumpers. If the radio fails to initialise on a given board, check which side is soldered before suspecting anything else. Note also that sh123 ships its own MeshCore variant for this board in `extras/meshcore/loraprs_esp32dev_e22/` — useful as a cross-reference.
+
+## Known issues / open work
+
+Found in review, not yet fixed. Ranked roughly by consequence:
+
+1. **A state change can be lost permanently.** `AirRaidGateway::handleState()` commits `_state` *before* `sendChannelText()`, and the send result is discarded (`injectChannelText()` returns `void`). If `sendGroupMessage()` fails — e.g. the packet pool is exhausted during congestion — the alert is never transmitted and never retried. Fix: track an `_announced_state` separately and only advance it on a confirmed send. `getChannel()` and `sendGroupMessage()` are both public on `BaseChatMesh`, so `sendChannelText()` can call them directly and get the `bool`.
+2. **Quote-strip fallback can shift the index by one.** In `pollOnce()`, a body that starts with `"` but does not *end* with `"` (trailing newline, or a truncated read) leaves `start = 0`, so the character for the neighbouring location is read — a silent, permanent wrong-region state, possibly a false all-clear. Should fail closed and ignore the response instead.
+3. **TLS certificate validation is disabled** (`client.setInsecure()`, already marked `TODO(v2)`). On a safety feed this lets an on-path attacker forge an all-clear. Wants `setCACert()` with a pinned root.
+4. **Injection emits an unsolicited `RESP_CODE_OK`** into the companion protocol stream, because it goes through `handleCmdFrame()`, whose `CMD_SEND_CHANNEL_TXT_MSG` branch ends in `writeOKFrame()`. An alert firing mid-`CMD_GET_CONTACTS` desyncs request/response for the app. The fix for (1) removes this too.
+5. **An alert spanning a reboot is never announced** — the first reading after boot is always silent, so a device that restarts mid-alert only ever sends the eventual all-clear.
+6. **No staleness alarm.** If polling dies permanently (expired token, AP gone), `_state` freezes and the channel goes quiet — which subscribers read as "no alert". Consider a periodic "gateway offline" message.
+7. Smaller: `xQueueCreate()`'s return is not checked before the task is started; a malformed `CHANNEL_PSK_HEX` silently falls back to the **Public** channel (alerts would go out unencrypted); `http.getString()` allocates a `String` every 15 s, against CONTRIBUTING's "no dynamic allocation outside setup"; `msg[96]` has only a few bytes of headroom and would truncate mid-UTF-8 with a longer `REGION_NAME`; `ui-new/UITask.cpp` guards on `WITH_AIR_RAID_GATEWAY` alone while the class is declared under `defined(ESP32) && ...`.
+
+Verified **not** problems: the two-thread split is clean (every member is either main-thread-only, task-only, or seeded before the task starts); `millis()` rollover is handled correctly everywhere in `AirRaidGateway`; `sendChannelText()`'s buffer arithmetic cannot overflow; `cmd_frame` has no re-entrancy risk (`handleCmdFrame` only ever runs on `loopTask`); the button debounce cannot change behaviour for any other board.
 
 ## Contribution conventions (from CONTRIBUTING.md)
 
