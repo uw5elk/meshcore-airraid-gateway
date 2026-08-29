@@ -123,6 +123,15 @@ A second, unrelated variant: `variants/esp32_loraprs_e22/` targets a DIY ESP32-D
 
 Pins were traced against the esp32_loraprs KiCad schematic (`extras/schematics/esp32dev/lora_tracker.sch` + netlist): RESET/DIO1/BUSY/RXEN/TXEN/MOSI are hard-wired, while **NSS/SCK/MISO route through solder jumpers JP1/JP2/JP3** (the project's 36-pin vs 38-pin board option). The configured 5/18/19 is the standard-ESP32-VSPI side of those jumpers. If the radio fails to initialise on a given board, check which side is soldered before suspecting anything else. Note also that sh123 ships its own MeshCore variant for this board in `extras/meshcore/loraprs_esp32dev_e22/` — useful as a cross-reference.
 
+**Build status: verified.** `pio run -e Esp32_loraprs_E22_companion_radio_ble` compiles and links cleanly — RAM 31.2% (102,272 of 327,680 bytes), Flash 71.0% (1,396,241 of 1,966,080, on `min_spiffs.csv`). Two problems had to be fixed to get there, both caused by copying flags out of the ESP32-**S3**-based `heltec_v3` template onto a classic ESP32. Read the comments in that variant's `platformio.ini` before changing its flags:
+
+- `ADMIN_PASSWORD` is a repeater/room-server flag. Defining it switched on the WiFi-OTA block in `src/helpers/ESP32Board.cpp`, which needs `ESPAsyncWebServer`/`AsyncTCP` — libraries a companion build does not pull in. Symptom: `fatal error: AsyncTCP.h: No such file or directory`.
+- `MAX_CONTACTS=350` / `MAX_GROUP_CHANNELS=40` / `OFFLINE_QUEUE_SIZE=256` sized ~111 KB of static arrays and overflowed `dram0_0_seg` by 39,256 bytes. Now 150/20/128 (~52 KB).
+
+Inferred from those two link attempts, the practical `dram0_0_seg` ceiling on this build is roughly 124 KB, so about 21 KB is spare at the current settings — enough to raise `MAX_CONTACTS` to ~250 if ever needed, but not enough to restore `OFFLINE_QUEUE_SIZE=256`.
+
+**Not yet done on this board:** flashing and an on-air test. Two things to expect on first bring-up: if the radio fails to initialise, check which side of solder jumpers JP1/JP2/JP3 is populated (see above); and the firmware boots on the inherited 869.618 MHz default, so the radio parameters have to be set from the phone app after BLE pairing (PIN 123456) before it can talk to a 433 MHz mesh.
+
 ## Known issues / open work
 
 Found in review, not yet fixed. Ranked roughly by consequence:
