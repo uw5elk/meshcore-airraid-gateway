@@ -1,154 +1,158 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Цей файл — інструкція для Claude Code (claude.ai/code) при роботі з цим репозиторієм.
 
-## What this is
+Ідентифікатори, шляхи до файлів, назви build-прапорців і тексти помилок навмисно
+лишені англійською — саме в такому вигляді вони зустрічаються в коді й у виводі
+компілятора, тож перекладати їх було б шкідливо.
 
-MeshCore is a portable C++ library for multi-hop LoRa packet routing on embedded devices (ESP32, nRF52, RP2040, STM32). `src/` is the core protocol library; `examples/` contains the firmware applications built on top of it; `variants/` contains per-board PlatformIO configs that combine a board + an example into a flashable firmware.
+## Що це
 
-**This repo is a fork.** On top of upstream MeshCore it adds an air-raid alert gateway (see "The air-raid gateway" below). Upstream's own README is preserved as `README-meshcore.md`; the root `README.md` documents the fork.
+MeshCore — портативна C++ бібліотека для багатострибкової (multi-hop) маршрутизації LoRa-пакетів на вбудованих пристроях (ESP32, nRF52, RP2040, STM32). `src/` — ядро протоколу; `examples/` — прошивки, побудовані на ньому; `variants/` — конфіги PlatformIO для конкретних плат, які поєднують плату з прикладом і дають готову прошивку.
 
-## Build system
+**Цей репозиторій — форк.** Поверх апстріму MeshCore він додає шлюз повітряних тривог (див. розділ «Шлюз повітряних тривог» нижче). Оригінальний README апстріму збережено як `README-meshcore.md`; кореневий `README.md` описує саме форк.
 
-This is a PlatformIO project (`platformio.ini` at the root, extended by every `variants/*/platformio.ini`). There is no CMake/Makefile workflow — always go through `pio`.
+## Система збірки
 
-Build a specific firmware target (env names follow `<Board>_<example>[_<variant>]`, e.g. `Heltec_v3_repeater`, `RAK_4631_companion_radio_ble`):
+Це проєкт PlatformIO (`platformio.ini` у корені, який розширює кожен `variants/*/platformio.ini`). Ніяких CMake чи Makefile — усе тільки через `pio`.
+
+Зібрати конкретну прошивку (імена середовищ мають вигляд `<Плата>_<приклад>[_<варіант>]`, наприклад `Heltec_v3_repeater`, `RAK_4631_companion_radio_ble`):
 ```
 pio run -e Heltec_v3_repeater
 ```
 
-The two envs that matter in this fork:
+Два середовища, які стосуються цього форку:
 ```
-pio run -e LilyGo_TLora_V2_1_1_6_airraid              # the air-raid gateway
-pio run -e Esp32_loraprs_E22_companion_radio_ble      # plain BT companion on DIY E22 hardware
+pio run -e LilyGo_TLora_V2_1_1_6_airraid              # шлюз повітряних тривог
+pio run -e Esp32_loraprs_E22_companion_radio_ble      # звичайний BT-компаньйон на саморобній платі з E22
 ```
 
-List all available environments (there are 100+, one per board/example combo):
+Показати всі доступні середовища (їх понад 100, по одному на кожну пару плата/приклад):
 ```
 pio project config | grep 'env:'
 ```
 
-`build.sh` is a convenience wrapper used mainly by CI/releases:
+`build.sh` — обгортка, яку використовують переважно CI та релізи:
 ```
-sh build.sh list                                  # list all firmware targets
-sh build.sh build-firmware RAK_4631_repeater       # build one target
-sh build.sh build-matching-firmwares RAK_4631      # build all targets matching a substring
-sh build.sh build-companion-firmwares              # build all companion firmwares
-sh build.sh build-repeater-firmwares               # build all repeater firmwares
-sh build.sh build-room-server-firmwares            # build all room-server firmwares
+sh build.sh list                                  # перелік усіх цілей збірки
+sh build.sh build-firmware RAK_4631_repeater       # зібрати одну ціль
+sh build.sh build-matching-firmwares RAK_4631      # зібрати всі цілі, що містять підрядок
+sh build.sh build-companion-firmwares              # зібрати всі companion-прошивки
+sh build.sh build-repeater-firmwares               # зібрати всі repeater-прошивки
+sh build.sh build-room-server-firmwares            # зібрати всі room-server прошивки
 ```
-`DISABLE_DEBUG=1` strips debug logging flags (`MESH_DEBUG`, `MESH_PACKET_LOGGING`) from the build.
+`DISABLE_DEBUG=1` прибирає зі збірки прапорці налагодження (`MESH_DEBUG`, `MESH_PACKET_LOGGING`).
 
-### Tests
+### Тести
 
-Unit tests run on the `native` platform (host machine, not embedded), via GoogleTest. Test sources live in `test/`; only `src/Utils.cpp` plus test files are compiled in (see `build_src_filter` for `env:native` in `platformio.ini`) — the native env does not build the full mesh/radio stack.
+Юніт-тести виконуються на платформі `native` (на хост-машині, не на залізі) через GoogleTest. Тести лежать у `test/`; компілюється лише `src/Utils.cpp` разом із файлами тестів (див. `build_src_filter` для `env:native` у `platformio.ini`) — повний стек mesh/радіо в native-середовищі не збирається.
 ```
 pio test -e native -vv
 ```
-To run a single test file, add `-f <pattern>`, e.g. `pio test -e native -f test_tohex`.
+Щоб запустити один файл тестів, додайте `-f <шаблон>`, наприклад `pio test -e native -f test_tohex`.
 
-There is no lint/format check step in CI — `.clang-format` exists (2-space indent, 110 col limit) but is **not** auto-applied. Do not reformat existing code you didn't write; it creates noisy diffs (explicitly called out in CONTRIBUTING.md).
+Кроку перевірки форматування в CI немає — `.clang-format` існує (відступ 2 пробіли, ліміт 110 колонок), але автоматично **не** застосовується. Не переформатовуйте чужий код, який ви не писали: це створює шумні діфи (про це прямо сказано в CONTRIBUTING.md).
 
 ### CI
 
-- `pr-build-check.yml` compiles a representative matrix of environments (ESP32-S3, nRF52, RP2040, STM32, ESP32-C6, SX1276) on every PR touching `src/`, `examples/`, `variants/`, or `platformio.ini`. Neither of this fork's two envs is in that matrix — build them locally before pushing.
-- `run-unit-tests.yml` runs `pio test -e native -vv`.
+- `pr-build-check.yml` збирає представницьку матрицю середовищ (ESP32-S3, nRF52, RP2040, STM32, ESP32-C6, SX1276) на кожен PR, що зачіпає `src/`, `examples/`, `variants/` чи `platformio.ini`. Жодного з двох середовищ цього форку в тій матриці немає — збирайте їх локально перед пушем.
+- `run-unit-tests.yml` виконує `pio test -e native -vv`.
 
-## Architecture
+## Архітектура
 
-### Layered core (`src/`)
+### Шари ядра (`src/`)
 
 ```
-Dispatcher (Dispatcher.h/.cpp)   generic send/receive queue + retry/backoff engine, radio-agnostic
-   -> Mesh (Mesh.h/.cpp)          understands Packet payload types, routing (flood vs direct vs transport), ACKs
-        -> BaseChatMesh (helpers/BaseChatMesh.h/.cpp)   contact/identity/channel abstractions, text messaging, login/ANON_REQ flows
-             -> MyMesh (per-example, e.g. examples/companion_radio/MyMesh.h)   concrete app: wires up serial/BLE frame protocol, CLI, or repeater/room-server behavior
+Dispatcher (Dispatcher.h/.cpp)   черга відправки/прийому + рушій ретраїв і backoff, не залежить від радіо
+   -> Mesh (Mesh.h/.cpp)          розуміє типи навантаження пакета, маршрутизацію (flood / direct / transport), ACK-и
+        -> BaseChatMesh (helpers/BaseChatMesh.h/.cpp)   контакти, ідентичності, канали, текстові повідомлення, логін/ANON_REQ
+             -> MyMesh (свій у кожному прикладі, напр. examples/companion_radio/MyMesh.h)   конкретний застосунок
 ```
-Everything is virtual-method extension point based: `Radio`, `RTCClock`, `MainBoard`, `MeshTables`, `BaseSerialInterface` etc. are abstract interfaces (in `MeshCore.h`, `Mesh.h`, `helpers/*.h`) implemented per-board/platform. Adding support for new hardware means implementing these interfaces, not touching the core routing logic.
+Усе побудоване на розширенні через віртуальні методи: `Radio`, `RTCClock`, `MainBoard`, `MeshTables`, `BaseSerialInterface` — абстрактні інтерфейси (в `MeshCore.h`, `Mesh.h`, `helpers/*.h`), реалізовані під кожну плату/платформу. Додати підтримку нового заліза означає реалізувати ці інтерфейси, а не правити логіку маршрутизації.
 
-`Packet` (`src/Packet.h`) is the wire unit: a `header` byte (route type + payload type + version bits), path bytes, and an encrypted payload. `PAYLOAD_TYPE_*` constants define the payload kinds (advert, text msg, group text/data, ACK, ANON_REQ, trace, control, etc.) — see `docs/packet_format.md` and `docs/payloads.md` for the on-wire layout.
+`Packet` (`src/Packet.h`) — одиниця передачі: байт `header` (тип маршруту + тип навантаження + біти версії), байти шляху і зашифроване навантаження. Константи `PAYLOAD_TYPE_*` задають види навантаження (advert, текстове повідомлення, груповий текст/дані, ACK, ANON_REQ, trace, control тощо) — розкладку на дроті описано в `docs/packet_format.md` і `docs/payloads.md`.
 
-### Examples (`examples/`)
+### Приклади (`examples/`)
 
-Each example is a self-contained firmware `main.cpp` + a `MyMesh` subclass that specializes `BaseChatMesh`/`Mesh` for a role:
-- `companion_radio` — pairs with the mobile/desktop apps over BLE/USB/Wi-Fi using a binary command-frame protocol (`docs/companion_protocol.md`). `MyMesh::handleCmdFrame()` in `examples/companion_radio/MyMesh.cpp` is the central command dispatcher — one big `if/else if` chain keyed on `cmd_frame[0]` (`CMD_*` codes). Has three swappable UI implementations (`ui-new`, `ui-orig`, `ui-tiny`) selected via `build_src_filter` per variant.
-- `simple_repeater` — forwards flood/direct packets to extend range; supports optional bridges (RS232/ESPNow, see `helpers/bridges/`) to link separate mesh networks.
-- `simple_room_server` — BBS-style server that stores posts for offline pickup (`docs/terminal_chat_cli.md` covers the CLI).
-- `simple_sensor` — telemetry-emitting node using `helpers/SensorManager.h` and `TimeSeriesData`.
-- `simple_secure_chat` — terminal chat client, driven over the Serial Monitor.
-- `kiss_modem` — bridges the mesh to KISS-protocol host applications (`docs/kiss_modem_protocol.md`).
+Кожен приклад — самодостатній `main.cpp` плюс підклас `MyMesh`, який спеціалізує `BaseChatMesh`/`Mesh` під конкретну роль:
+- `companion_radio` — працює в парі з мобільним/десктопним застосунком через BLE/USB/Wi-Fi за бінарним протоколом командних кадрів (`docs/companion_protocol.md`). `MyMesh::handleCmdFrame()` у `examples/companion_radio/MyMesh.cpp` — центральний диспетчер команд: один великий ланцюг `if/else if` за `cmd_frame[0]` (коди `CMD_*`). Має три взаємозамінні реалізації UI (`ui-new`, `ui-orig`, `ui-tiny`), які обираються через `build_src_filter` у конкретному варіанті.
+- `simple_repeater` — переспрямовує flood/direct пакети для розширення покриття; підтримує опційні мости (RS232/ESPNow, див. `helpers/bridges/`) для зв'язку окремих mesh-мереж.
+- `simple_room_server` — сервер у стилі BBS, зберігає повідомлення для офлайн-отримання (CLI описано в `docs/terminal_chat_cli.md`).
+- `simple_sensor` — вузол телеметрії на основі `helpers/SensorManager.h` і `TimeSeriesData`.
+- `simple_secure_chat` — термінальний чат-клієнт, керується через Serial Monitor.
+- `kiss_modem` — міст між mesh-мережею і застосунками з протоколом KISS (`docs/kiss_modem_protocol.md`).
 
-### Board wiring (`variants/`, `boards/`, `arch/`)
+### Прив'язка до плат (`variants/`, `boards/`, `arch/`)
 
-Each `variants/<name>/platformio.ini` defines a base board section (pins, radio chip `-D RADIO_CLASS=...`, SPI mapping) and then one `[env:...]` per example it supports, layering `build_src_filter` to pull in the right `examples/<x>` sources plus board-specific helpers (display driver, sensors, bridges). `boards/*.json` are PlatformIO board defs for hardware not upstreamed to PlatformIO itself; `arch/{esp32,stm32}/` hold vendored/patched libraries needed only on those MCUs (e.g. LittleFS port, AsyncElegantOTA).
+Кожен `variants/<назва>/platformio.ini` описує базову секцію плати (піни, радіочіп через `-D RADIO_CLASS=...`, розкладка SPI), а далі по одному `[env:...]` на кожен приклад, який ця плата підтримує, нашаровуючи `build_src_filter` для потрібних вихідників `examples/<x>` плюс специфічні для плати помічники (драйвер дисплея, сенсори, мости). `boards/*.json` — визначення плат для PlatformIO для того заліза, якого немає в самому PlatformIO; `arch/{esp32,stm32}/` містять вендорені/пропатчені бібліотеки, потрібні лише на цих МК (наприклад, порт LittleFS, AsyncElegantOTA).
 
-### Key size/config constants
+### Ключові константи розмірів і конфігурації
 
-Frame and packet size limits (`MAX_FRAME_SIZE`, `MAX_PACKET_PAYLOAD`, `MAX_PATH_SIZE`, contact/channel counts like `MAX_CONTACTS`/`MAX_GROUP_CHANNELS`) are set via `-D` build flags per variant/env, not hardcoded — check the relevant `platformio.ini` env before assuming a value.
+Ліміти кадрів і пакетів (`MAX_FRAME_SIZE`, `MAX_PACKET_PAYLOAD`, `MAX_PATH_SIZE`, кількості контактів і каналів на кшталт `MAX_CONTACTS`/`MAX_GROUP_CHANNELS`) задаються прапорцями `-D` для кожного варіанта/середовища, а не зашиті в код — перевіряйте відповідний `platformio.ini`, перш ніж припускати якесь значення.
 
-Radio parameters (`LORA_FREQ`, `LORA_BW`, `LORA_SF`, `LORA_CR`, `LORA_TX_POWER`) work the same way. On `companion_radio` these are only the first-boot defaults — the paired phone/desktop app writes them into the stored prefs, so a companion build does not need them pinned per variant.
+Радіопараметри (`LORA_FREQ`, `LORA_BW`, `LORA_SF`, `LORA_CR`, `LORA_TX_POWER`) працюють так само. Для `companion_radio` це лише значення за замовчуванням при першому завантаженні — далі спарений застосунок на телефоні чи десктопі записує їх у збережені налаштування, тож companion-збірці не обов'язково фіксувати їх у варіанті.
 
-## The air-raid gateway
+## Шлюз повітряних тривог
 
-An air-raid alert gateway layered on top of `companion_radio`, running as a Companion-role node (not repeater/room-server). User-facing docs are in the root `README.md`; this section covers what a code change needs to know.
+Шлюз повітряних тривог, надбудований над `companion_radio`, працює в ролі Companion (не repeater і не room-server). Документація для користувача — у кореневому `README.md`; цей розділ описує те, що потрібно знати при зміні коду.
 
-**Target hardware:** LilyGo T3 LoRa32 v1.6.1 (SX1276, no TCXO), 433 MHz.
+**Цільове залізо:** LilyGo T3 LoRa32 v1.6.1 (SX1276, без TCXO), 433 МГц.
 
-**Alert source:** the bulk endpoint `https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json` — note there is **no uid in the path** (the older per-region `.../active_air_raid_alerts/<uid>.json` form is what returns 404 now). The response body is a single JSON string with one character per location (`N` = clear, `A`/`P` = alert). `ALERTS_UID` is therefore a **0-based index into that string**, not a URL component; `pollOnce()` strips the surrounding quotes before indexing. Known-good values: `279` = Kryvyi Rih city/hromada, `9` = Dnipropetrovsk oblast. Auth is `Authorization: Bearer <token>`; the service documents only 401 (bad/expired token) and 429 (rate limit). Poll interval 15 s (service cap is 12 req/min), doubling backoff capped at 5 min on 429.
+**Джерело тривог:** bulk-ендпоінт `https://api.alerts.in.ua/v1/iot/active_air_raid_alerts.json` — зверніть увагу, **без uid у шляху** (старіша форма `.../active_air_raid_alerts/<uid>.json` тепер повертає 404). Тіло відповіді — один JSON-рядок, по символу на локацію (`N` = немає тривоги, `A`/`P` = тривога). Тому `ALERTS_UID` — це **0-based індекс у цьому рядку**, а не частина URL; `pollOnce()` спершу знімає лапки навколо рядка, а вже потім індексує. Перевірені значення: `279` — м. Кривий Ріг і громада, `9` — Дніпропетровська область. Авторизація — `Authorization: Bearer <token>`; сервіс документує лише 401 (поганий/протермінований токен) і 429 (перевищення ліміту). Інтервал опитування 15 с (ліміт сервісу — 12 запитів/хв), при 429 інтервал подвоюється з обмеженням у 5 хвилин.
 
-**Threading model.** `AirRaidGateway` runs the WiFi/HTTP work on its own FreeRTOS task pinned to **core 0** (where the WiFi driver already lives), so a TLS handshake never blocks `loopTask` on core 1. The two threads communicate **only** through a length-1 mailbox queue (`xQueueOverwrite`/`xQueueReceive`) carrying a `PollSnapshot`. Mesh and UI objects are not thread-safe: `injectChannelText()`, `UITask` calls and all `_state` handling happen exclusively on the main thread, from `loop()`, after draining the queue. **Keep this split** — do not touch `_mesh`/`_ui` from `pollTaskLoop()`/`pollOnce()`.
+**Модель потоків.** `AirRaidGateway` виконує роботу з WiFi/HTTP в окремій задачі FreeRTOS, прив'язаній до **ядра 0** (там уже живе драйвер WiFi), щоб TLS-хендшейк ніколи не блокував `loopTask` на ядрі 1. Два потоки спілкуються **виключно** через чергу-поштову-скриньку довжиною 1 (`xQueueOverwrite`/`xQueueReceive`), яка переносить `PollSnapshot`. Об'єкти mesh і UI не є потокобезпечними: `injectChannelText()`, виклики `UITask` і вся робота зі `_state` відбуваються тільки в головному потоці, з `loop()`, після вичитування черги. **Зберігайте цей поділ** — не чіпайте `_mesh`/`_ui` з `pollTaskLoop()`/`pollOnce()`.
 
-**Key pieces:**
-- `MyMesh::injectChannelText(const uint8_t*, size_t)` (`examples/companion_radio/MyMesh.h`/`.cpp`) — clamps `len` to `MAX_FRAME_SIZE`, copies into `cmd_frame`, calls `handleCmdFrame(len)`. Injection point for pushing a group-channel text alert without going through the serial/BLE frame path.
-- `examples/companion_radio/AirRaidGateway.h`/`.cpp` — polling, state dedupe (message only on change), silent baseline on the first reading after boot.
-- **Dedicated channel, not Public.** `registerChannel()` writes the channel at slot **1** (slot 0 is always `"Public"`, re-added by `MyMesh::begin()` every boot) via the public `BaseChatMesh::setChannel()`. The 16-byte PSK comes from `CHANNEL_PSK_HEX` through `mesh::Utils::fromHex()`. Registration is **in-memory only, re-done every boot** (idempotent check first) — deliberately not persisted, to avoid touching the private `MyMesh::saveChannels()`.
-- `examples/companion_radio/AirRaidGatewayConfig.h` — `GW_WIFI_SSID`/`GW_WIFI_PASS` (deliberately *not* `WIFI_SSID`/`WIFI_PWD`, which `main.cpp` already uses to move the companion protocol itself onto WiFi/TCP), `ALERTS_TOKEN`, `ALERTS_UID`, `REGION_NAME`, `CHANNEL_NAME`, `CHANNEL_PSK_HEX`. **In `.gitignore`, must never be committed** — holds the real token, WiFi credentials and channel PSK. Verified absent from git history on all branches.
-- **OLED pages** (`ui-new/UITask.cpp`): `HomePage::AIRRAID` (state, seconds since last successful poll or last HTTP error, WiFi, battery) and `HomePage::DIAG` (uptime, free heap/stack, unread count), both feature-flagged like the existing GPS/SENSORS pages. Text is Latin on purpose — `DisplayDriver::translateUTF8ToBlocks()` replaces any non-ASCII byte with a block glyph, so Cyrillic is unrenderable in the default Adafruit_GFX font. The channel message itself stays Cyrillic (rendered by the phone/desktop app, not the OLED).
-- `main.cpp` wires `begin()`/`loop()` in, gated behind `#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)`, so the other 100+ companion_radio envs are unaffected.
-- `MomentaryButton` gained an optional trailing `debounce_ms` constructor arg (default `0` = previous behaviour for every other board); the gateway uses ~25 ms.
+**Ключові складові:**
+- `MyMesh::injectChannelText(const uint8_t*, size_t)` (`examples/companion_radio/MyMesh.h`/`.cpp`) — обмежує `len` до `MAX_FRAME_SIZE`, копіює в `cmd_frame`, викликає `handleCmdFrame(len)`. Точка ін'єкції, щоб надіслати текст у груповий канал, не проходячи звичайним шляхом serial/BLE-кадрів.
+- `examples/companion_radio/AirRaidGateway.h`/`.cpp` — опитування, дедуплікація стану (повідомлення тільки при зміні), мовчазне встановлення базового стану при першому зчитуванні після старту.
+- **Власний канал, не Public.** `registerChannel()` записує канал у слот **1** (слот 0 — завжди `"Public"`, його щоразу додає `MyMesh::begin()`) через публічний `BaseChatMesh::setChannel()`. 16-байтовий PSK береться з `CHANNEL_PSK_HEX` через `mesh::Utils::fromHex()`. Реєстрація відбувається **лише в пам'яті, щоразу при старті** (спершу йде ідемпотентна перевірка) — свідомо не зберігається у флеш, щоб не чіпати приватний `MyMesh::saveChannels()`.
+- `examples/companion_radio/AirRaidGatewayConfig.h` — `GW_WIFI_SSID`/`GW_WIFI_PASS` (навмисно *не* `WIFI_SSID`/`WIFI_PWD`, які `main.cpp` уже використовує, щоб перевести сам companion-протокол на WiFi/TCP), `ALERTS_TOKEN`, `ALERTS_UID`, `REGION_NAME`, `CHANNEL_NAME`, `CHANNEL_PSK_HEX`. **Файл у `.gitignore`, комітити його не можна ніколи** — він містить справжній токен, дані WiFi і PSK каналу. Перевірено: у git-історії його немає в жодній гілці.
+- **Сторінки OLED** (`ui-new/UITask.cpp`): `HomePage::AIRRAID` (стан, секунди від останнього успішного опитування або код останньої HTTP-помилки, WiFi, батарея) і `HomePage::DIAG` (аптайм, вільна купа/стек, лічильник непрочитаних), обидві за feature-прапорцем, як наявні сторінки GPS/SENSORS. Текст навмисно латиницею: `DisplayDriver::translateUTF8ToBlocks()` замінює будь-який не-ASCII байт на суцільний блок, тож кирилиця в стандартному шрифті Adafruit_GFX не відображається. Саме повідомлення в каналі лишається кирилицею — його малює застосунок на телефоні чи десктопі, а не цей OLED.
+- `main.cpp` під'єднує `begin()`/`loop()` під `#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)`, тож решта 100+ середовищ companion_radio не зачіпаються.
+- `MomentaryButton` отримав необов'язковий останній аргумент конструктора `debounce_ms` (за замовчуванням `0` — попередня поведінка для всіх інших плат); шлюз використовує ~25 мс.
 
-**Build env:** `LilyGo_TLora_V2_1_1_6_airraid` in `variants/lilygo_tlora_v2_1/platformio.ini`, extending the existing `LilyGo_TLora_V2_1_1_6` base. Sets `LORA_FREQ=433.650`, `LORA_BW=62.5`, `LORA_SF=8`, `LORA_CR=8` (TX power 20 inherited), `PIN_USER_BTN=4` + `PIN_USER_BTN_PULLUP=true`, and `-D WITH_AIR_RAID_GATEWAY`. `MESH_DEBUG` and `MESH_PACKET_LOGGING` are intentionally **off** — there are `; NOTE: DO NOT ENABLE` markers on them; re-enable only for a bring-up session and turn them back off before pushing.
+**Середовище збірки:** `LilyGo_TLora_V2_1_1_6_airraid` у `variants/lilygo_tlora_v2_1/platformio.ini`, розширює наявну базову секцію `LilyGo_TLora_V2_1_1_6`. Задає `LORA_FREQ=433.650`, `LORA_BW=62.5`, `LORA_SF=8`, `LORA_CR=8` (потужність 20 успадковується), `PIN_USER_BTN=4` + `PIN_USER_BTN_PULLUP=true` і `-D WITH_AIR_RAID_GATEWAY`. `MESH_DEBUG` і `MESH_PACKET_LOGGING` навмисно **вимкнені** — біля них стоять позначки `; NOTE: DO NOT ENABLE`; вмикайте лише на час діагностики і обов'язково вимикайте перед пушем.
 
-**Status:** working on hardware — boots clean, registers the channel, connects to WiFi, polls the API, and delivers alerts to the channel.
+**Стан:** працює на залізі — стартує чисто, реєструє канал, під'єднується до WiFi, опитує API і доставляє тривоги в канал.
 
-### Strapping-pin trap (resolved, do not regress)
+### Пастка зі strapping-пінами (вирішено, не повторювати)
 
-The board booted straight into CLI Rescue (`SPIFFS: mount failed, -10025` then `========= CLI Rescue =========`) whenever `PIN_USER_BTN` was GPIO0 or GPIO12. Both are ESP32 **strapping pins** (GPIO0 = BOOT, GPIO12 = MTDI/VDD_SDIO flash voltage select): an external pull during reset corrupts flash-voltage strapping *and* reads as a held button inside `UITask`'s 8-second rescue window. `enterCLIRescue()` is purely button-driven — there is no boot-loop or watchdog auto-rescue anywhere in this codebase. GPIO36 also failed, because `MomentaryButton` enables no internal pull unless asked, so an unwired pin floats. Resolved by moving the button to **GPIO4** with `PIN_USER_BTN_PULLUP=true`. `PIN_USER_BTN=-1` is the codebase convention for "no button" if one is ever needed.
+Плата стартувала одразу в CLI Rescue (`SPIFFS: mount failed, -10025`, далі `========= CLI Rescue =========`) щоразу, коли `PIN_USER_BTN` був GPIO0 або GPIO12. Обидва — **strapping-піни** ESP32 (GPIO0 = BOOT, GPIO12 = MTDI/вибір напруги живлення флеш-пам'яті): зовнішня підтяжка під час reset ламає strapping напруги флеша *і* водночас читається як затиснута кнопка у восьмисекундному вікні rescue всередині `UITask`. `enterCLIRescue()` спрацьовує виключно від кнопки — жодного автоматичного входу в rescue від boot-loop чи watchdog у цьому коді немає. GPIO36 теж не спрацював, бо `MomentaryButton` не вмикає внутрішню підтяжку, поки її явно не попросять, і непід'єднаний пін просто плаває. Вирішено перенесенням кнопки на **GPIO4** з `PIN_USER_BTN_PULLUP=true`. Якщо колись знадобиться варіант «кнопки немає», у цьому коді для цього є конвенція `PIN_USER_BTN=-1`.
 
-## The `esp32_loraprs_e22` variant
+## Варіант `esp32_loraprs_e22`
 
-A second, unrelated variant: `variants/esp32_loraprs_e22/` targets a DIY ESP32-DEV + EBYTE E22 (SX1268) board wired per [sh123/esp32_loraprs](https://github.com/sh123/esp32_loraprs) (`variants/esp32dev_e22`). Its `target.h`/`target.cpp` are copies of upstream's `variants/generic-e22` (the pins come from build flags, so the glue is generic).
+Другий, не пов'язаний з тривогами варіант: `variants/esp32_loraprs_e22/` розрахований на саморобну плату ESP32-DEV + EBYTE E22 (SX1268), зібрану за схемою [sh123/esp32_loraprs](https://github.com/sh123/esp32_loraprs) (`variants/esp32dev_e22`). Його `target.h`/`target.cpp` — копії апстрімівського `variants/generic-e22` (піни надходять з build-прапорців, тож цей «клей» універсальний).
 
-**It builds a stock BT Companion — `WITH_AIR_RAID_GATEWAY` is deliberately not set**, so no alert polling and no AIRRAID/DIAG pages (that board has no display).
+**Це звичайний BT-компаньйон — `WITH_AIR_RAID_GATEWAY` навмисно не заданий**, тож ніякого опитування тривог і сторінок AIRRAID/DIAG (на цій платі немає дисплея).
 
-Pins were traced against the esp32_loraprs KiCad schematic (`extras/schematics/esp32dev/lora_tracker.sch` + netlist): RESET/DIO1/BUSY/RXEN/TXEN/MOSI are hard-wired, while **NSS/SCK/MISO route through solder jumpers JP1/JP2/JP3** (the project's 36-pin vs 38-pin board option). The configured 5/18/19 is the standard-ESP32-VSPI side of those jumpers. If the radio fails to initialise on a given board, check which side is soldered before suspecting anything else. Note also that sh123 ships its own MeshCore variant for this board in `extras/meshcore/loraprs_esp32dev_e22/` — useful as a cross-reference.
+Піни звірені зі схемою KiCad проєкту esp32_loraprs (`extras/schematics/esp32dev/lora_tracker.sch` + нетліст): RESET/DIO1/BUSY/RXEN/TXEN/MOSI розведені жорстко, а от **NSS/SCK/MISO проходять через перемички JP1/JP2/JP3** (це і є вибір «плата на 36 чи 38 пінів» із того проєкту). Задані 5/18/19 відповідають стандартному варіанту ESP32 VSPI. Якщо на конкретному екземплярі плати радіо не ініціалізується — перевіряйте передусім, яка сторона перемичок запаяна, а не щось інше. Крім того, sh123 постачає власний MeshCore-варіант для цієї плати в `extras/meshcore/loraprs_esp32dev_e22/` — корисно як звірка.
 
-**Build status: verified.** `pio run -e Esp32_loraprs_E22_companion_radio_ble` compiles and links cleanly — RAM 31.2% (102,272 of 327,680 bytes), Flash 71.0% (1,396,241 of 1,966,080, on `min_spiffs.csv`). Two problems had to be fixed to get there, both caused by copying flags out of the ESP32-**S3**-based `heltec_v3` template onto a classic ESP32. Read the comments in that variant's `platformio.ini` before changing its flags:
+**Стан збірки: перевірено.** `pio run -e Esp32_loraprs_E22_companion_radio_ble` компілюється й лінкується без помилок — RAM 31.2% (102 272 з 327 680 байт), Flash 71.0% (1 396 241 з 1 966 080, на `min_spiffs.csv`). Дорогою довелося виправити дві проблеми, обидві через перенесення прапорців із шаблону `heltec_v3`, який побудований на ESP32-**S3**, на класичний ESP32. Перш ніж міняти прапорці цього варіанта, прочитайте коментарі в його `platformio.ini`:
 
-- `ADMIN_PASSWORD` is a repeater/room-server flag. Defining it switched on the WiFi-OTA block in `src/helpers/ESP32Board.cpp`, which needs `ESPAsyncWebServer`/`AsyncTCP` — libraries a companion build does not pull in. Symptom: `fatal error: AsyncTCP.h: No such file or directory`.
-- `MAX_CONTACTS=350` / `MAX_GROUP_CHANNELS=40` / `OFFLINE_QUEUE_SIZE=256` sized ~111 KB of static arrays and overflowed `dram0_0_seg` by 39,256 bytes. Now 150/20/128 (~52 KB).
+- `ADMIN_PASSWORD` — прапорець для repeater/room-server. Його визначення вмикало блок WiFi-OTA в `src/helpers/ESP32Board.cpp`, якому потрібні `ESPAsyncWebServer`/`AsyncTCP` — бібліотеки, яких companion-збірка не підключає. Симптом: `fatal error: AsyncTCP.h: No such file or directory`.
+- `MAX_CONTACTS=350` / `MAX_GROUP_CHANNELS=40` / `OFFLINE_QUEUE_SIZE=256` давали ~111 КБ статичних масивів і переповнювали `dram0_0_seg` на 39 256 байт. Тепер 150/20/128 (~52 КБ).
 
-Inferred from those two link attempts, the practical `dram0_0_seg` ceiling on this build is roughly 124 KB, so about 21 KB is spare at the current settings — enough to raise `MAX_CONTACTS` to ~250 if ever needed, but not enough to restore `OFFLINE_QUEUE_SIZE=256`.
+За цими двома спробами лінкування можна оцінити, що практична стеля `dram0_0_seg` у цій збірці — приблизно 124 КБ, тобто при поточних налаштуваннях лишається близько 21 КБ запасу: цього вистачить, щоб за потреби підняти `MAX_CONTACTS` десь до 250, але вже не вистачить, щоб повернути `OFFLINE_QUEUE_SIZE=256`.
 
-**Not yet done on this board:** flashing and an on-air test. Two things to expect on first bring-up: if the radio fails to initialise, check which side of solder jumpers JP1/JP2/JP3 is populated (see above); and the firmware boots on the inherited 869.618 MHz default, so the radio parameters have to be set from the phone app after BLE pairing (PIN 123456) before it can talk to a 433 MHz mesh.
+**Ще не зроблено на цій платі:** прошивка й перевірка в ефірі. Дві речі, на які варто зважати при першому запуску: якщо радіо не ініціалізується — дивіться, яка сторона перемичок JP1/JP2/JP3 запаяна (див. вище); і прошивка стартує на успадкованому за замовчуванням 869.618 МГц, тож радіопараметри треба виставити із застосунку на телефоні після спарювання по BLE (PIN 123456), інакше вузол не зможе працювати в мережі на 433 МГц.
 
-## Known issues / open work
+## Відомі проблеми / незакрита робота
 
-Found in review, not yet fixed. Ranked roughly by consequence:
+Знайдено під час рев'ю, ще не виправлено. Впорядковано приблизно за наслідками:
 
-1. **A state change can be lost permanently.** `AirRaidGateway::handleState()` commits `_state` *before* `sendChannelText()`, and the send result is discarded (`injectChannelText()` returns `void`). If `sendGroupMessage()` fails — e.g. the packet pool is exhausted during congestion — the alert is never transmitted and never retried. Fix: track an `_announced_state` separately and only advance it on a confirmed send. `getChannel()` and `sendGroupMessage()` are both public on `BaseChatMesh`, so `sendChannelText()` can call them directly and get the `bool`.
-2. **Quote-strip fallback can shift the index by one.** In `pollOnce()`, a body that starts with `"` but does not *end* with `"` (trailing newline, or a truncated read) leaves `start = 0`, so the character for the neighbouring location is read — a silent, permanent wrong-region state, possibly a false all-clear. Should fail closed and ignore the response instead.
-3. **TLS certificate validation is disabled** (`client.setInsecure()`, already marked `TODO(v2)`). On a safety feed this lets an on-path attacker forge an all-clear. Wants `setCACert()` with a pinned root.
-4. **Injection emits an unsolicited `RESP_CODE_OK`** into the companion protocol stream, because it goes through `handleCmdFrame()`, whose `CMD_SEND_CHANNEL_TXT_MSG` branch ends in `writeOKFrame()`. An alert firing mid-`CMD_GET_CONTACTS` desyncs request/response for the app. The fix for (1) removes this too.
-5. **An alert spanning a reboot is never announced** — the first reading after boot is always silent, so a device that restarts mid-alert only ever sends the eventual all-clear.
-6. **No staleness alarm.** If polling dies permanently (expired token, AP gone), `_state` freezes and the channel goes quiet — which subscribers read as "no alert". Consider a periodic "gateway offline" message.
-7. Smaller: `xQueueCreate()`'s return is not checked before the task is started; a malformed `CHANNEL_PSK_HEX` silently falls back to the **Public** channel (alerts would go out unencrypted); `http.getString()` allocates a `String` every 15 s, against CONTRIBUTING's "no dynamic allocation outside setup"; `msg[96]` has only a few bytes of headroom and would truncate mid-UTF-8 with a longer `REGION_NAME`; `ui-new/UITask.cpp` guards on `WITH_AIR_RAID_GATEWAY` alone while the class is declared under `defined(ESP32) && ...`.
+1. **Зміна стану може загубитися назавжди.** `AirRaidGateway::handleState()` фіксує `_state` *до* виклику `sendChannelText()`, а результат відправки ігнорується (`injectChannelText()` повертає `void`). Якщо `sendGroupMessage()` не спрацює — наприклад, вичерпано пул пакетів при заторі в ефірі — тривога не піде і повторної спроби не буде. Виправлення: тримати окремо `_announced_state` і зсувати його лише після підтвердженої відправки. `getChannel()` і `sendGroupMessage()` обидва публічні в `BaseChatMesh`, тож `sendChannelText()` може викликати їх напряму й отримати `bool`.
+2. **Зняття лапок може зсунути індекс на одиницю.** У `pollOnce()` тіло, яке починається з `"`, але *не закінчується* на `"` (кінцевий перенос рядка або обірване читання), лишає `start = 0`, тож читається символ сусідньої локації — мовчазний і постійний невірний стан для чужого регіону, потенційно хибний «відбій». Треба відмовлятися від такої відповіді (fail closed), а не відкочуватись на `start = 0`.
+3. **Вимкнено перевірку TLS-сертифіката** (`client.setInsecure()`, уже позначено як `TODO(v2)`). Для каналу оповіщення це дає можливість підмінити «відбій» тому, хто контролює маршрут. Потрібен `setCACert()` із закріпленим кореневим сертифікатом.
+4. **Ін'єкція шле незапитаний `RESP_CODE_OK`** у потік companion-протоколу, бо йде через `handleCmdFrame()`, а його гілка `CMD_SEND_CHANNEL_TXT_MSG` завершується викликом `writeOKFrame()`. Тривога, що спрацює посеред `CMD_GET_CONTACTS`, розсинхронізує запит і відповідь для застосунку. Виправлення пункту (1) прибирає й це.
+5. **Тривога, що почалася під час перезавантаження, не оголошується** — перше зчитування після старту завжди мовчазне, тож пристрій, який перезавантажився посеред тривоги, надішле лише подальший «відбій».
+6. **Немає сигналу про застарілі дані.** Якщо опитування помре остаточно (протух токен, зникла точка доступу), `_state` заморожується і в каналі стає тихо — а підписники читають тишу як «тривоги немає». Варто періодично слати повідомлення «шлюз офлайн».
+7. Дрібніше: результат `xQueueCreate()` не перевіряється перед стартом задачі; помилковий `CHANNEL_PSK_HEX` тихо відкочує на канал **Public** (тривоги пішли б у відкритий ефір); `http.getString()` виділяє `String` кожні 15 с, що суперечить вимозі CONTRIBUTING «жодних динамічних виділень поза setup»; у `msg[96]` лишається всього кілька байт запасу і при довшому `REGION_NAME` рядок обріжеться посеред символу UTF-8; `ui-new/UITask.cpp` перевіряє лише `WITH_AIR_RAID_GATEWAY`, тоді як сам клас оголошено під `defined(ESP32) && ...`.
 
-Verified **not** problems: the two-thread split is clean (every member is either main-thread-only, task-only, or seeded before the task starts); `millis()` rollover is handled correctly everywhere in `AirRaidGateway`; `sendChannelText()`'s buffer arithmetic cannot overflow; `cmd_frame` has no re-entrancy risk (`handleCmdFrame` only ever runs on `loopTask`); the button debounce cannot change behaviour for any other board.
+Перевірено і проблемами **не є**: поділ на два потоки чистий (кожне поле класу або тільки для головного потоку, або тільки для задачі, або ініціалізоване до її старту); переповнення `millis()` скрізь у `AirRaidGateway` оброблено правильно; арифметика буферів у `sendChannelText()` не може вийти за межі; `cmd_frame` не має ризику повторного входу (`handleCmdFrame` виконується лише в `loopTask`); дебаунс кнопки не може змінити поведінку жодної іншої плати.
 
-## Contribution conventions (from CONTRIBUTING.md)
+## Домовленості щодо внесків (з CONTRIBUTING.md)
 
-- Target the `dev` branch for PRs, not `main`.
-- No dynamic memory allocation outside of setup/`begin()` functions — this is embedded, keep it concise, avoid unnecessary abstraction layers.
-- One feature/fix per PR.
-- If you change public API, update `README.md`.
+- PR-и слати в гілку `dev`, не в `main`.
+- Жодного динамічного виділення пам'яті поза функціями setup/`begin()` — це вбудована система, тримайте код стислим і уникайте зайвих шарів абстракції.
+- Одна фіча або одне виправлення на PR.
+- Якщо змінюєте публічний API — оновіть `README.md`.
