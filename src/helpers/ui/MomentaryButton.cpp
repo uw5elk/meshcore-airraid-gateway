@@ -81,8 +81,8 @@ int MomentaryButton::check(bool repeat_click) {
       _last_raw_level = raw;
       _last_raw_change_at = now;
     }
-    // Only accept the raw level once it's been stable for _debounce_ms -
-    // otherwise keep reporting the last accepted (pre-bounce) level.
+    // Приймаємо сирий рівень лише після того, як він протримався стабільним
+    // _debounce_ms - інакше повертаємо останній прийнятий рівень (до дребезгу).
     btn = ((unsigned long)(now - _last_raw_change_at) >= (unsigned long)_debounce_ms) ? _last_raw_level : prev;
   } else {
     btn = raw;

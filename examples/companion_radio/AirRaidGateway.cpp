@@ -11,27 +11,29 @@
 #include "ui-new/UITask.h"
 #include <time.h>
 
-#define ALERT_POLL_INTERVAL_MS     15000    // alerts.in.ua hard limit: 12 req/min
-#define ALERT_BACKOFF_MAX_MS      300000    // cap for 429 backoff
+#define ALERT_POLL_INTERVAL_MS     15000    // жорсткий ліміт alerts.in.ua: 12 запитів/хв
+#define ALERT_BACKOFF_MAX_MS      300000    // стеля відступу при 429
 #define ALERT_HTTP_TIMEOUT_MS       5000
 #define ALERT_WIFI_RETRY_MS        10000
-#define ALERT_WIFI_DOWN_IDLE_MS      500    // task sleep between reconnect attempts while WiFi is down
-#define ALERT_POLL_IDLE_MS           200    // task sleep between "not due yet" checks
-#define ALERT_POLL_TASK_STACK      10240    // bytes; sized via uxTaskGetStackHighWaterMark() logging below
-#define ALERT_POLL_TASK_CORE           0    // WiFi driver task already lives on core 0; keep loopTask (core 1) free
-#define ALERT_STACK_LOG_EVERY_N_POLLS 20    // throttle MESH_DEBUG stack watermark logging
+#define ALERT_WIFI_DOWN_IDLE_MS      500    // сон задачі між спробами перепідключення, поки WiFi лежить
+#define ALERT_POLL_IDLE_MS           200    // сон задачі між перевірками "ще не час"
+#define ALERT_POLL_TASK_STACK      10240    // байти; розмір підібрано за логами uxTaskGetStackHighWaterMark() нижче
+#define ALERT_POLL_TASK_CORE           0    // задача драйвера WiFi уже на ядрі 0; ядро 1 лишаємо вільним для loopTask
+#define ALERT_STACK_LOG_EVERY_N_POLLS 20    // як рідко писати в MESH_DEBUG запас стека
 
-// Anything below this means NTP hasn't synced yet (fresh boot reads back an
-// implausible epoch) - never print a bogus timestamp in an alert message.
+// Усе, що менше за це значення, означає, що NTP ще не синхронізувався (одразу
+// після старту система віддає неправдоподібну епоху) - ніколи не друкуємо
+// фальшивий час у повідомленні про тривогу.
 #define NTP_READY_EPOCH_THRESHOLD  1700000000UL   // ~2023-11-14 UTC
 
-// CMD_SEND_CHANNEL_TXT_MSG value (private #define in MyMesh.cpp:8, not exposed
-// via MyMesh.h) - kept in sync manually since injectChannelText() must not change.
+// Значення CMD_SEND_CHANNEL_TXT_MSG (приватний #define у MyMesh.cpp:8, назовні
+// через MyMesh.h не виставлений) - синхронізуємо вручну, бо injectChannelText()
+// міняти не можна.
 #define CMD_SEND_CHANNEL_TXT_MSG_VAL   3
 #define TXT_TYPE_PLAIN_VAL             0
 
-// Index 0 is always "Public" (added by MyMesh::begin() on every boot).
-// We claim slot 1 for our own alert channel.
+// Індекс 0 - завжди "Public" (його додає MyMesh::begin() при кожному старті).
+// Слот 1 займаємо під власний канал тривог.
 #define AIR_RAID_CHANNEL_SLOT          1
 
 void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
@@ -39,20 +41,21 @@ void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
   _ui = ui;
   _state = STATE_UNKNOWN;
   _poll_interval_ms = ALERT_POLL_INTERVAL_MS;
-  _next_poll_at = millis();  // poll as soon as WiFi comes up
+  _next_poll_at = millis();  // опитати одразу, щойно підніметься WiFi
   registerChannel();
 
-  // One-time, non-blocking kick-off from the main thread. From this point on,
-  // WiFi.begin()/.disconnect()/.status() are only ever called from the
-  // background poll task (see pollTaskLoop()) - exactly one thread owns the
-  // WiFi connection lifecycle.
+  // Одноразовий неблокуючий старт із головного потоку. Від цього моменту
+  // WiFi.begin()/.disconnect()/.status() викликаються виключно з фонової задачі
+  // опитування (див. pollTaskLoop()) - життєвим циклом WiFi-з'єднання володіє
+  // рівно один потік.
   WiFi.mode(WIFI_STA);
   WiFi.begin(GW_WIFI_SSID, GW_WIFI_PASS);
   MESH_DEBUG_PRINTLN("AirRaidGateway: connecting to WiFi '%s'...", GW_WIFI_SSID);
 
-  // Kyiv local time (EET/EEST) for alert message timestamps, via NTP over our
-  // own WiFi - independent of the mesh clock. getRTCClock() stays UTC, synced
-  // from advert packets, and is still used only for the wire frame timestamp.
+  // Київський місцевий час (EET/EEST) для міток часу в повідомленнях про
+  // тривогу, через NTP по власному WiFi - незалежно від годинника mesh-мережі.
+  // getRTCClock() лишається в UTC, синхронізується з advert-пакетів і надалі
+  // використовується тільки для мітки часу в кадрі на дроті.
   configTzTime("EET-2EEST,M3.5.0/1,M10.5.0/1", "pool.ntp.org", "time.google.com");
 
   if (_poll_task == NULL) {
@@ -82,7 +85,7 @@ void AirRaidGateway::registerChannel() {
   ChannelDetails desired;
   memset(&desired, 0, sizeof(desired));
   StrHelper::strncpy(desired.name, CHANNEL_NAME, sizeof(desired.name));
-  memcpy(desired.channel.secret, psk, sizeof(psk));  // remaining bytes stay 0 -> 128-bit key
+  memcpy(desired.channel.secret, psk, sizeof(psk));  // решта байтів лишаються 0 -> 128-бітний ключ
 
   ChannelDetails existing;
   bool already_registered = _mesh->getChannel(AIR_RAID_CHANNEL_SLOT, existing)
@@ -103,13 +106,13 @@ void AirRaidGateway::registerChannel() {
   }
 }
 
-// ---- Main-thread side: drains the mailbox, does all Mesh/UI side effects ----
+// ---- Бік головного потоку: вичитує скриньку і робить усі дії з Mesh/UI ----
 
 void AirRaidGateway::loop() {
   if (_result_queue == NULL) return;
 
   PollSnapshot snap;
-  if (xQueueReceive(_result_queue, &snap, 0) != pdTRUE) return;   // nothing new - non-blocking
+  if (xQueueReceive(_result_queue, &snap, 0) != pdTRUE) return;   // нічого нового - не блокуємось
 
   _wifi_connected_cached = snap.wifi_connected;
   if (snap.has_http_result) {
@@ -121,11 +124,11 @@ void AirRaidGateway::loop() {
 
 void AirRaidGateway::handleState(AlertState new_state) {
   if (_state == STATE_UNKNOWN) {
-    _state = new_state;  // establish baseline silently, no message on boot
+    _state = new_state;  // мовчки встановлюємо базовий стан, при старті не шлемо нічого
     MESH_DEBUG_PRINTLN("AirRaidGateway: baseline = %s", new_state == STATE_ALERT ? "ALERT" : "CLEAR");
     return;
   }
-  if (new_state == _state) return;  // no change -> no message
+  if (new_state == _state) return;  // стан не змінився -> нічого не шлемо
 
   _state = new_state;
 
@@ -139,9 +142,9 @@ void AirRaidGateway::handleState(AlertState new_state) {
   }
 
   char msg[96];
-  time_t t = time(nullptr);  // system time: NTP-synced, already Kyiv-local via configTzTime()
+  time_t t = time(nullptr);  // системний час: із NTP, уже київський завдяки configTzTime()
   if (t < NTP_READY_EPOCH_THRESHOLD) {
-    // Fresh boot, NTP hasn't synced yet - never print a bogus timestamp.
+    // Щойно стартували, NTP ще не синхронізувався - фальшивий час не друкуємо.
     MESH_DEBUG_PRINTLN("AirRaidGateway: NTP not synced yet, sending alert without a timestamp");
     if (new_state == STATE_ALERT) {
       snprintf(msg, sizeof(msg), "\xF0\x9F\x94\xB4 ПОВІТРЯНА ТРИВОГА — %s", REGION_NAME);
@@ -180,7 +183,7 @@ void AirRaidGateway::sendChannelText(const char* text) {
   _mesh->injectChannelText(frame, i);
 }
 
-// ---- Background-task side: WiFi + HTTP only, never touches _mesh/_ui ----
+// ---- Бік фонової задачі: тільки WiFi + HTTP, _mesh/_ui не чіпає ніколи ----
 
 void AirRaidGateway::pollTaskTrampoline(void* param) {
   static_cast<AirRaidGateway*>(param)->pollTaskLoop();
@@ -215,7 +218,7 @@ void AirRaidGateway::pollOnce() {
   PollSnapshot snap = { false, STATE_UNKNOWN, true, false, 0, true };
 
   WiFiClientSecure client;
-  client.setInsecure();   // TODO(v2): pin/verify alerts.in.ua cert
+  client.setInsecure();   // TODO(v2): закріпити/перевіряти сертифікат alerts.in.ua
 
   HTTPClient http;
   http.setConnectTimeout(ALERT_HTTP_TIMEOUT_MS);
@@ -235,13 +238,13 @@ void AirRaidGateway::pollOnce() {
 
   if (code == 200) {
     String body = http.getString();
-    _poll_interval_ms = ALERT_POLL_INTERVAL_MS;  // clear any backoff
+    _poll_interval_ms = ALERT_POLL_INTERVAL_MS;  // скидаємо відступ, якщо він був
     snap.success = true;
 
-    // Body is a JSON string literal, e.g. "   NNN...A...N" - strip the surrounding quotes
-    // (if present) so index 0 of the content lines up with UID 0. Verified against live data:
-    // UID 9 (Dnipropetrovsk oblast) and UID 279 (Kryvyi Rih) both matched known live state at
-    // this 0-based offset.
+    // Тіло - це рядковий літерал JSON, напр. "   NNN...A...N" - знімаємо лапки навколо
+    // (якщо вони є), щоб індекс 0 вмісту збігався з UID 0. Звірено з живими даними:
+    // UID 9 (Дніпропетровська обл.) і UID 279 (Кривий Ріг) обидва збіглися з відомим
+    // на той момент станом саме за цим 0-based зміщенням.
     int start = 0;
     int content_len = (int)body.length();
     if (content_len >= 2 && body[0] == '"' && body[content_len - 1] == '"') {
@@ -250,8 +253,8 @@ void AirRaidGateway::pollOnce() {
     }
 
     if (content_len <= ALERTS_UID) {
-      // Truncated/short/unexpected response - do NOT report a state, so the main
-      // thread never treats this as a false all-clear (or false alert).
+      // Обрізана/закоротка/несподівана відповідь - стан НЕ повідомляємо, щоб головний
+      // потік не сприйняв це за хибний відбій (чи хибну тривогу).
       MESH_DEBUG_PRINTLN("AirRaidGateway: response too short (%d chars, need > %d) - ignoring, keeping previous state", content_len, ALERTS_UID);
     } else {
       char c = body[start + ALERTS_UID];
@@ -276,12 +279,12 @@ void AirRaidGateway::pollOnce() {
 
   http.end();
 
-  snap.wifi_connected = true;  // we only get here when WiFi.status() == WL_CONNECTED
+  snap.wifi_connected = true;  // сюди потрапляємо лише за WiFi.status() == WL_CONNECTED
   xQueueOverwrite(_result_queue, &snap);
 
-  // Stack sizing aid: throttled so it doesn't spam serial every 15s. Once a
-  // safe/comfortable ALERT_POLL_TASK_STACK is picked from real readings, this
-  // logging (and the counter) can be dropped.
+  // Допоміжне для підбору розміру стека: логується рідко, щоб не засмічувати
+  // serial кожні 15 с. Коли за реальними показаннями буде обрано безпечний
+  // ALERT_POLL_TASK_STACK, це логування (і лічильник) можна прибрати.
   if ((++_poll_count_for_stack_log % ALERT_STACK_LOG_EVERY_N_POLLS) == 1) {
     UBaseType_t words_free = uxTaskGetStackHighWaterMark(NULL);
     MESH_DEBUG_PRINTLN("AirRaidGateway: poll task stack high-water mark = %u bytes free (of %d)",

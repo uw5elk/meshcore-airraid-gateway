@@ -20,10 +20,11 @@ class MomentaryButton {
   int _multi_click_window;
   bool _pending_click;
 
-  // Optional raw-edge debounce (0 = off, matches every existing caller).
-  // When > 0, a raw HIGH/LOW transition must be stable for this many ms
-  // before check() treats it as a real press/release edge - filters
-  // mechanical contact bounce without touching the click-counting logic.
+  // Необов'язковий дебаунс сирого фронту (0 = вимкнено, саме так поводяться
+  // всі наявні виклики). Якщо > 0, сира зміна HIGH/LOW має протриматись
+  // стабільною стільки мілісекунд, перш ніж check() визнає її справжнім
+  // фронтом натискання/відпускання - фільтрує дребезг контактів, не чіпаючи
+  // логіку підрахунку кліків.
   int _debounce_ms;
   int _last_raw_level;
   unsigned long _last_raw_change_at;

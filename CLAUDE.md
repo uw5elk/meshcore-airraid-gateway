@@ -111,7 +111,7 @@ Dispatcher (Dispatcher.h/.cpp)   черга відправки/прийому + 
 - `main.cpp` під'єднує `begin()`/`loop()` під `#if defined(ESP32) && defined(WITH_AIR_RAID_GATEWAY)`, тож решта 100+ середовищ companion_radio не зачіпаються.
 - `MomentaryButton` отримав необов'язковий останній аргумент конструктора `debounce_ms` (за замовчуванням `0` — попередня поведінка для всіх інших плат); шлюз використовує ~25 мс.
 
-**Середовище збірки:** `LilyGo_TLora_V2_1_1_6_airraid` у `variants/lilygo_tlora_v2_1/platformio.ini`, розширює наявну базову секцію `LilyGo_TLora_V2_1_1_6`. Задає `LORA_FREQ=433.650`, `LORA_BW=62.5`, `LORA_SF=8`, `LORA_CR=8` (потужність 20 успадковується), `PIN_USER_BTN=4` + `PIN_USER_BTN_PULLUP=true` і `-D WITH_AIR_RAID_GATEWAY`. `MESH_DEBUG` і `MESH_PACKET_LOGGING` навмисно **вимкнені** — біля них стоять позначки `; NOTE: DO NOT ENABLE`; вмикайте лише на час діагностики і обов'язково вимикайте перед пушем.
+**Середовище збірки:** `LilyGo_TLora_V2_1_1_6_airraid` у `variants/lilygo_tlora_v2_1/platformio.ini`, розширює наявну базову секцію `LilyGo_TLora_V2_1_1_6`. Задає `LORA_FREQ=433.650`, `LORA_BW=62.5`, `LORA_SF=8`, `LORA_CR=8` (потужність 20 успадковується), `PIN_USER_BTN=4` + `PIN_USER_BTN_PULLUP=true` і `-D WITH_AIR_RAID_GATEWAY`. `MESH_DEBUG` і `MESH_PACKET_LOGGING` навмисно **вимкнені** — біля них стоять позначки `; УВАГА: НЕ ВМИКАТИ`; вмикайте лише на час діагностики і обов'язково вимикайте перед пушем.
 
 **Стан:** працює на залізі — стартує чисто, реєструє канал, під'єднується до WiFi, опитує API і доставляє тривоги в канал.
 
