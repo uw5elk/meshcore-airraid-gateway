@@ -18,12 +18,13 @@ EnvironmentSensorManager sensors;
   #define PIN_USER_BTN_PULLUP false
 #endif
 #ifdef WITH_AIR_RAID_GATEWAY
-  // This board's ad-hoc GPIO4 button wiring shows noticeably more mechanical
-  // contact bounce than a native PCB button footprint - without this, single
-  // clicks were being counted as DOUBLE/TRIPLE_CLICK. ~25ms is comfortably
-  // above typical bounce (1-20ms) and comfortably below human double-click
-  // gaps (150-250ms). Scoped to this env only: every other board (and this
-  // variant's own base env) keeps MomentaryButton's default debounce_ms=0.
+  // Кнопка, підпаяна навісом до GPIO4 на цій платі, дає помітно більший
+  // дребезг контактів, ніж штатне посадкове місце кнопки на друкованій платі -
+  // без цього одиночні натискання рахувались як DOUBLE/TRIPLE_CLICK. ~25 мс із
+  // запасом більші за типовий дребезг (1-20 мс) і з запасом менші за людську
+  // паузу між подвійним кліком (150-250 мс). Діє лише в цьому середовищі: усі
+  // інші плати (і базове середовище цього ж варіанта) лишаються зі стандартним
+  // для MomentaryButton debounce_ms=0.
   MomentaryButton user_btn(PIN_USER_BTN, 1000, true, PIN_USER_BTN_PULLUP, true, 25);
 #else
   MomentaryButton user_btn(PIN_USER_BTN, 1000, true, PIN_USER_BTN_PULLUP);

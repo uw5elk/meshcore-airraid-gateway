@@ -8,18 +8,18 @@
 #endif
 #ifdef WITH_AIR_RAID_GATEWAY
   #include <time.h>
-  // Mirrors AirRaidGateway.cpp's NTP_READY_EPOCH_THRESHOLD. Duplicated
-  // (not exposed via AirRaidGateway.h) to keep this UI-only change
-  // scoped to UITask.cpp.
+  // Дублює NTP_READY_EPOCH_THRESHOLD з AirRaidGateway.cpp. Саме продубльовано
+  // (а не виставлено через AirRaidGateway.h), щоб ця суто UI-шна зміна
+  // лишалась у межах UITask.cpp.
   #define AIRRAID_UI_NTP_READY_EPOCH_THRESHOLD 1700000000UL   // ~2023-11-14 UTC
 #endif
 
 #ifndef AUTO_OFF_MILLIS
   #define AUTO_OFF_MILLIS     15000   // 15 seconds
 #endif
-// How long the display stays on after AirRaidGateway wakes it for a state
-// change. Falls back to the normal AUTO_OFF_MILLIS on boards that don't set
-// this (i.e. everywhere except our env).
+// Скільки екран лишається увімкненим після того, як AirRaidGateway розбудив
+// його через зміну стану. На платах, де це не задано (тобто скрізь, окрім
+// нашого середовища), береться звичайний AUTO_OFF_MILLIS.
 #ifndef AIR_RAID_WAKE_MS
   #define AIR_RAID_WAKE_MS    AUTO_OFF_MILLIS
 #endif
@@ -439,15 +439,16 @@ public:
         display.setColor(DisplayDriver::GREEN);
         display.drawTextCentered(display.width() / 2, 30, "...");
       } else {
-        // Latin, not Cyrillic: the default Adafruit_GFX font has no Cyrillic glyphs
-        // (DisplayDriver::translateUTF8ToBlocks() turns them into solid blocks).
-        // "TRYVOGA R" = 9 chars * 12px at text size 2 = 108px, fits the 128px width.
+        // Латиниця, а не кирилиця: у типовому шрифті Adafruit_GFX кириличних
+        // гліфів немає (DisplayDriver::translateUTF8ToBlocks() перетворює їх на
+        // суцільні блоки). "TRYVOGA R" = 9 символів * 12 px при розмірі тексту 2
+        // = 108 px, влазить у ширину 128 px.
         const char* state_txt = "VIDBIY";
         if (alert) {
           switch (air_raid_gateway.getAlertLevel()) {
             case ALERT_LEVEL_RED:    state_txt = "TRYVOGA R"; break;
             case ALERT_LEVEL_YELLOW: state_txt = "TRYVOGA Y"; break;
-            default:                 state_txt = "TRYVOGA";   break;   // level not known
+            default:                 state_txt = "TRYVOGA";   break;   // рівень невідомий
           }
         }
         display.drawTextCentered(display.width() / 2, 28, state_txt);
@@ -466,9 +467,9 @@ public:
       }
       display.drawTextLeftAlign(0, 46, buf);
 
-      // NTP-synced Kyiv local time, same source as alert message timestamps
-      // in AirRaidGateway.cpp (system time is already Kyiv-local via
-      // configTzTime()).
+      // Київський місцевий час із NTP, те саме джерело, що й мітки часу в
+      // повідомленнях про тривогу в AirRaidGateway.cpp (системний час уже
+      // приведений до київського через configTzTime()).
       char timebuf[6];
       time_t now = time(nullptr);
       if (now < AIRRAID_UI_NTP_READY_EPOCH_THRESHOLD) {
@@ -759,9 +760,9 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
 
   if (_display != NULL) {
 #ifdef WITH_AIR_RAID_GATEWAY
-    // hasConnection() is meaningless here (ArduinoSerialInterface::isConnected() is
-    // hardcoded true). Gateway is only ever subscribed to our own low-traffic
-    // channel(s), never a chatty public one, so waking on any inbound message is safe.
+    // hasConnection() тут беззмістовний (ArduinoSerialInterface::isConnected() завжди
+    // повертає true). Шлюз підписаний лише на власні малотрафікові канали, ніколи на
+    // галасливий публічний, тож будити екран на будь-яке вхідне повідомлення безпечно.
     if (!_display->isOn()) {
 #else
     if (!_display->isOn() && !hasConnection()) {
