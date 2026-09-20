@@ -10,6 +10,20 @@
 
 class UITask;   // ui-new/UITask.h - forward decl only, kept out of the header
 
+// Severity of an active alert, as reported by the detail endpoint's "alert_level"
+// field. UNKNOWN means the detail request failed, was skipped, or the record had
+// no usable level - in that case the alert message degrades to the plain form.
+enum AlertLevel : uint8_t { ALERT_LEVEL_UNKNOWN = 0, ALERT_LEVEL_RED, ALERT_LEVEL_YELLOW };
+
+// Byte budget for the rendered, translated, deduped threat list ("дрони, ракети").
+// Hard ceiling, not a style choice: BaseChatMesh::sendGroupMessage() truncates the
+// whole text at MAX_TEXT_LEN (160) *including* the "<node_name>: " prefix, and that
+// truncation is a raw byte cut that would split a UTF-8 char in half. Worst case:
+// 52 B base message + 75 B list + 33 B prefix (31-char name) = 160 B exactly.
+// The list is always trimmed on whole tokens, never mid-token, so a short list can
+// never end up as mojibake.
+#define THREAT_LIST_MAX_BYTES  75
+
 // Polls alerts.in.ua for a single region's air-raid status and injects a
 // group-channel text message via MyMesh::injectChannelText() whenever the
 // state changes (alert <-> all-clear).
@@ -31,6 +45,7 @@ public:
 
   bool hasBaseline() const { return _state != STATE_UNKNOWN; }
   bool isAlertActive() const { return _state == STATE_ALERT; }
+  AlertLevel getAlertLevel() const { return _level; }   // UNKNOWN unless an alert is active with details
   bool isWifiConnected() const { return _wifi_connected_cached; }
   int getLastHttpCode() const { return _last_http_code; }
   long secondsSinceLastSuccess() const;   // -1 if never succeeded yet
@@ -51,11 +66,19 @@ private:
     bool success;          // valid only if has_http_result; true if it returned 200
     int http_code;         // valid only if has_http_result
     bool wifi_connected;
+    // Threat detail, filled by fetchDetails() only on a CLEAR->ALERT transition.
+    // has_details == false means "send the plain alert message" - every failure
+    // path (timeout, 429, parse error, record missing, level missing) lands here.
+    bool has_details;
+    AlertLevel level;                             // valid only if has_details
+    char threat_list[THREAT_LIST_MAX_BYTES + 1];  // valid only if has_details; may be ""
   };
 
   MyMesh* _mesh = NULL;
   UITask* _ui = NULL;
   AlertState _state = STATE_UNKNOWN;
+  AlertLevel _level = ALERT_LEVEL_UNKNOWN;          // set on CLEAR->ALERT, cleared on all-clear
+  char _threat_list[THREAT_LIST_MAX_BYTES + 1] = {0};
   unsigned long _last_success_at = 0;
   int _last_http_code = 0;
   bool _wifi_connected_cached = false;
@@ -66,17 +89,25 @@ private:
   unsigned long _poll_interval_ms = 0;
   unsigned long _last_wifi_reconnect_attempt = 0;
   uint32_t _poll_count_for_stack_log = 0;
+  // Shadow of _state, advanced by the task from the same parse results, so the task
+  // can spot a CLEAR->ALERT transition itself and fetch detail *before* the snapshot
+  // reaches loop(). The main thread's _state stays the single source of truth for
+  // what was actually sent.
+  AlertState _task_state = STATE_UNKNOWN;
+  bool _detail_pending = false;   // hold _pending_snap back for one frame to fetch detail
+  PollSnapshot _pending_snap;     // a member, not a local: keeps ~90 B off the task stack
 
   TaskHandle_t _poll_task = NULL;
   QueueHandle_t _result_queue = NULL;
 
   void registerChannel();
-  void handleState(AlertState new_state);
+  void handleState(const PollSnapshot& snap);
   void sendChannelText(const char* text);
 
   static void pollTaskTrampoline(void* param);
   void pollTaskLoop();   // runs forever on the background task
   void pollOnce();       // one HTTP GET + parse, posts a PollSnapshot
+  void fetchDetails();   // one extra HTTP GET, streamed+scanned; fills _pending_snap
 };
 
 extern AirRaidGateway air_raid_gateway;

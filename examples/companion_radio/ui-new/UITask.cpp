@@ -439,7 +439,18 @@ public:
         display.setColor(DisplayDriver::GREEN);
         display.drawTextCentered(display.width() / 2, 30, "...");
       } else {
-        display.drawTextCentered(display.width() / 2, 28, alert ? "TRYVOGA" : "VIDBIY");
+        // Latin, not Cyrillic: the default Adafruit_GFX font has no Cyrillic glyphs
+        // (DisplayDriver::translateUTF8ToBlocks() turns them into solid blocks).
+        // "TRYVOGA R" = 9 chars * 12px at text size 2 = 108px, fits the 128px width.
+        const char* state_txt = "VIDBIY";
+        if (alert) {
+          switch (air_raid_gateway.getAlertLevel()) {
+            case ALERT_LEVEL_RED:    state_txt = "TRYVOGA R"; break;
+            case ALERT_LEVEL_YELLOW: state_txt = "TRYVOGA Y"; break;
+            default:                 state_txt = "TRYVOGA";   break;   // level not known
+          }
+        }
+        display.drawTextCentered(display.width() / 2, 28, state_txt);
       }
 
       display.setColor(DisplayDriver::GREEN);
