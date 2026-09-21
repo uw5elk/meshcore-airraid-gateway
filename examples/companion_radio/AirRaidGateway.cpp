@@ -33,8 +33,14 @@
 
 // Запис, який нам потрібен ("Криворізький район"), і обласний запис, на який
 // відкочуємось, якщо першого немає. Звіряємо з рядковим значенням "location_uid".
-#define DETAIL_TARGET_UID   "46"
-#define DETAIL_FALLBACK_UID "9"
+// Можна перевизначити в AirRaidGatewayConfig.h (він підключений вище). Значення -
+// рядки в лапках, бо location_uid порівнюється як рядок через strcmp.
+#ifndef ALERT_DETAIL_LOCATION_UID
+  #define ALERT_DETAIL_LOCATION_UID "46"   // Криворізький район
+#endif
+#ifndef ALERT_DETAIL_FALLBACK_UID
+  #define ALERT_DETAIL_FALLBACK_UID "9"    // Дніпропетровська обл.
+#endif
 
 // Усе, що менше за це значення, означає, що NTP ще не синхронізувався (одразу
 // після старту система віддає неправдоподібну епоху) - ніколи не друкуємо
@@ -326,11 +332,11 @@ private:
 
   void closeRecord() {
     _in_record = false;
-    if (strcmp(_uid, DETAIL_TARGET_UID) == 0) {
+    if (strcmp(_uid, ALERT_DETAIL_LOCATION_UID) == 0) {
       _primary = _scratch;
       _have_primary = true;
       _abort = true;   // отримали те, по що прийшли - обриваємо завантаження
-    } else if (!_have_fallback && strcmp(_uid, DETAIL_FALLBACK_UID) == 0) {
+    } else if (!_have_fallback && strcmp(_uid, ALERT_DETAIL_FALLBACK_UID) == 0) {
       _fallback = _scratch;
       _have_fallback = true;   // скануємо далі; цільовий запис ще може трапитись
     }
@@ -648,7 +654,7 @@ void AirRaidGateway::fetchDetails() {
   const AlertRecord* rec = alert_scanner.result();
   if (rec == NULL) {
     MESH_DEBUG_PRINTLN("AirRaidGateway: detail - no record for uid %s or %s in %u bytes - plain alert",
-                        DETAIL_TARGET_UID, DETAIL_FALLBACK_UID, (unsigned)alert_scanner.bytesScanned());
+                        ALERT_DETAIL_LOCATION_UID, ALERT_DETAIL_FALLBACK_UID, (unsigned)alert_scanner.bytesScanned());
     return;
   }
   if (rec->level == ALERT_LEVEL_UNKNOWN) {
@@ -662,7 +668,7 @@ void AirRaidGateway::fetchDetails() {
 
   MESH_DEBUG_PRINTLN("AirRaidGateway: detail ok (%s, uid %s, %u threats, %u bytes scanned) -> '%s'",
                       rec->level == ALERT_LEVEL_RED ? "red" : "yellow",
-                      alert_scanner.foundPrimary() ? DETAIL_TARGET_UID : DETAIL_FALLBACK_UID,
+                      alert_scanner.foundPrimary() ? ALERT_DETAIL_LOCATION_UID : ALERT_DETAIL_FALLBACK_UID,
                       (unsigned)rec->threat_count, (unsigned)alert_scanner.bytesScanned(),
                       _pending_snap.threat_list);
 }
