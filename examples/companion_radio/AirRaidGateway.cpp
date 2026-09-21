@@ -617,7 +617,7 @@ void AirRaidGateway::fetchDetails() {
   _pending_snap.threat_list[0] = 0;
 
   WiFiClientSecure client;
-  client.setInsecure();   // TODO(v2): pin/verify alerts.in.ua cert
+  client.setInsecure();   // TODO(v2): закріпити/перевіряти сертифікат alerts.in.ua
 
   HTTPClient http;
   http.setConnectTimeout(ALERT_DETAIL_HTTP_TIMEOUT_MS);
