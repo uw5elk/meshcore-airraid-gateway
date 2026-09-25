@@ -22,10 +22,26 @@
 #define ALERT_POLL_TASK_CORE           0    // задача драйвера WiFi уже на ядрі 0; ядро 1 лишаємо вільним для loopTask
 #define ALERT_STACK_LOG_EVERY_N_POLLS 20    // як рідко писати в MESH_DEBUG запас стека
 
-// ---- Детальний запит про загрози (спрацьовує лише на переході CLEAR->ALERT) ----
-#define ALERT_DETAIL_HTTP_TIMEOUT_MS  6000  // підключення + читання; обмежує додаткову затримку тривоги
+// ---- Детальний запит про загрози ----
+// Перший запит нової тривоги (перехід CLEAR->ALERT): повідомлення чекає на нього, тож
+// таймаути жорсткіші. Не вклався - іде звичайне повідомлення, а рівень доганяє перечитування.
+// Дедлайн рахується від початку запиту; найгірший випадок (повільний connect + мовчазний
+// сервер) - приблизно connect + read таймаути, тобто ~6 с, типово 1-3 с.
+#define ALERT_FIRST_DETAIL_TIMEOUT_MS   3000
+#define ALERT_FIRST_DETAIL_DEADLINE_MS  4000
+// Планові перечитування під час тривоги - нічого не чекає, тож таймаути ширші.
+#define ALERT_DETAIL_HTTP_TIMEOUT_MS  6000  // підключення + читання
 #define ALERT_DETAIL_DEADLINE_MS      8000  // жорсткий ліміт часу на потокове сканування
-#define ALERT_DETAIL_MAX_BYTES    (64*1024) // жорсткий ліміт прочитаних байт, якщо документ розростеться
+// Документ вже ~40 КБ у звичайний день (~600 Б на запис, а запис району 46 стоїть ближче
+// до кінця), тож стеля 64 КБ була б близько. Гальмує лише ліміт часу вище, це - запобіжник.
+#define ALERT_DETAIL_MAX_BYTES    (128*1024)
+#define ALERT_DETAIL_RECHECK_MS      30000  // швидке перечитування після переходу CLEAR->ALERT: доганяє занижений перший рівень
+#define ALERT_DETAIL_REFRESH_MS      60000  // далі раз на хвилину, поки триває тривога
+#define ALERT_DETAIL_RETRY_MS        15000  // єдина повторна спроба, якщо швидке перечитування не вдалось
+// Швидке перечитування і кожне 3-тє планове йдуть БЕЗ If-Modified-Since: Last-Modified має
+// секундну точність, тож 304 міг би сховати зміну, що сталась у ту саму секунду, що й
+// попередній запит. Так це може приховати підвищення не довше ~3 хв (3 x 60 с).
+#define ALERT_DETAIL_FULL_EVERY_N        3
 #define MAX_THREATS                     8   // на один запис; надлишок відкидаємо
 #define THREAT_TYPE_MAX                28   // "strategic_aircraft_activity" = 27 символів + NUL
 #define JSON_TOKEN_MAX                 40   // найдовший рядок, який нас цікавить; довші обрізаються
@@ -37,6 +53,12 @@
 // рядки в лапках, бо location_uid порівнюється як рядок через strcmp.
 #ifndef ALERT_DETAIL_LOCATION_UID
   #define ALERT_DETAIL_LOCATION_UID "46"   // Криворізький район
+#endif
+#ifndef ALERT_DETAIL_HROMADA_UID
+  #define ALERT_DETAIL_HROMADA_UID  "279"  // Криворізька громада
+#endif
+#ifndef ALERT_DETAIL_CITY_UID
+  #define ALERT_DETAIL_CITY_UID     "5279" // м. Кривий Ріг
 #endif
 #ifndef ALERT_DETAIL_FALLBACK_UID
   #define ALERT_DETAIL_FALLBACK_UID "9"    // Дніпропетровська обл.
@@ -57,17 +79,77 @@
 // Слот 1 займаємо під власний канал тривог.
 #define AIR_RAID_CHANNEL_SLOT          1
 
+// ---- Бюджет переліку загроз на кожен тип повідомлення ----
+// sendGroupMessage() ріже текст на MAX_TEXT_LEN (160) разом із префіксом "<node_name>: ", по
+// сирих байтах - тож на перелік лишається те, що не зайняв решта шаблону. Рахуємо для
+// найгіршого випадку: імʼя вузла на всі 31 символ + ": " = 33 Б, час " HH:MM" присутній.
+// "Решта шаблону" - це весь текст повідомлення, крім самого переліку, разом із дужками " ()".
+// Шаблони нижче мусять збігатися з тими, що збирають повідомлення в handleState() і
+// handleDetailRefresh(); REGION_NAME береться з конфігу, тож довше імʼя саме зменшить бюджет.
+// Перевірено на "Кривий Ріг": ТРИВОГА 52 Б -> 75, ПІДВИЩЕНО 56 Б -> 71, ЗНИЖЕНО 82 Б -> 45.
+#define NODE_PREFIX_WORST_BYTES  (sizeof(NodePrefs::node_name) - 1 + 2)
+#define LIST_BUDGET(fixed_part) \
+  ((int)MAX_TEXT_LEN - (int)NODE_PREFIX_WORST_BYTES - (int)(sizeof(fixed_part) - 1))
+#define EMOJI_RED_LIT     "\xF0\x9F\x94\xB4"   // U+1F534, як і 🟡 U+1F7E1 - 4 байти
+static const int LIST_BUDGET_FIRST = LIST_BUDGET(EMOJI_RED_LIT " ТРИВОГА — " REGION_NAME " 22:22 ()");
+static const int LIST_BUDGET_RAISE = LIST_BUDGET(EMOJI_RED_LIT " ПІДВИЩЕНО — " REGION_NAME " 22:22 ()");
+static const int LIST_BUDGET_LOWER = LIST_BUDGET(EMOJI_RED_LIT " ЗНИЖЕНО — " REGION_NAME " 22:22 (). Тривога триває.");
+// Хоч один короткий токен ("дрони" = 10 Б) має влізти, інакше REGION_NAME задовгий для шаблону.
+static_assert(LIST_BUDGET_FIRST >= 10 && LIST_BUDGET_RAISE >= 10 && LIST_BUDGET_LOWER >= 10,
+              "REGION_NAME is too long: no room left for the threat list in a 160-byte message");
+
+// Обрізає перелік "дрони, ракети, ..." до max_bytes по цілих токенах (роздільник ", "): токен,
+// що не влазить, відкидається разом з усім, що після нього, тож UTF-8 не розрубується.
+// Якщо не влазить навіть перший токен - порожній результат (повідомлення без дужок).
+static void fitThreatList(const char* src, char* dst, size_t dst_sz, int max_bytes) {
+  size_t len = strlen(src);
+  size_t cut = len;
+  if ((int)len > max_bytes) {
+    cut = 0;
+    for (size_t i = 0; i + 1 < len && (int)i <= max_bytes; i++) {
+      if (src[i] == ',' && src[i + 1] == ' ') cut = i;
+    }
+  }
+  if (cut >= dst_sz) cut = dst_sz - 1;   // недосяжно при буфері THREAT_LIST_MAX_BYTES + 1, але дешево
+  memcpy(dst, src, cut);
+  dst[cut] = 0;
+}
+
+// Лише для налагоджувальних рядків.
+static const char* levelName(AlertLevel l) {
+  switch (l) {
+    case ALERT_LEVEL_RED:    return "red";
+    case ALERT_LEVEL_YELLOW: return "yellow";
+    default:                 return "unknown";
+  }
+}
+
+// Для розбивки "raion=... hromada=... city=..." - "-" означає "запис не знайдено
+// в цьому скануванні", а не "рівень невідомий" (друге на практиці не трапляється:
+// запис без придатного alert_level просто не потрапляє в жоден із трьох _have_*).
+static const char* dash(AlertLevel l) {
+  return l == ALERT_LEVEL_UNKNOWN ? "-" : levelName(l);
+}
+
 void AirRaidGateway::begin(MyMesh* mesh, UITask* ui) {
   _mesh = mesh;
   _ui = ui;
   _state = STATE_UNKNOWN;
   _level = ALERT_LEVEL_UNKNOWN;
   _threat_list[0] = 0;
+  _announced = AlertAnnounced();
   _task_state = STATE_UNKNOWN;
   _detail_pending = false;
+  _detail_sched = false;
+  _detail_recheck_pending = false;
+  _detail_periodic_count = 0;
+  _last_read_level = ALERT_LEVEL_UNKNOWN;
+  _detail_last_modified[0] = 0;
   memset(&_pending_snap, 0, sizeof(_pending_snap));
   _poll_interval_ms = ALERT_POLL_INTERVAL_MS;
   _next_poll_at = millis();  // опитати одразу, щойно підніметься WiFi
+  MESH_DEBUG_PRINTLN("AirRaidGateway: threat list budgets (bytes): first=%d raise=%d lower=%d, buffer=%d",
+                      LIST_BUDGET_FIRST, LIST_BUDGET_RAISE, LIST_BUDGET_LOWER, THREAT_LIST_MAX_BYTES);
   registerChannel();
 
   // Одноразовий неблокуючий старт із головного потоку. Від цього моменту
@@ -145,14 +227,32 @@ void AirRaidGateway::loop() {
     _last_http_code = snap.http_code;
     if (snap.success) _last_success_at = millis();
   }
-  if (snap.has_state) handleState(snap);
+  if (snap.is_refresh) handleDetailRefresh(snap);
+  else if (snap.has_state) handleState(snap);
+}
+
+// " HH:MM" або "", поки NTP не синхронізувався (щойно після старту система
+// віддає неправдоподібну епоху - фальшивий час не друкуємо).
+void AirRaidGateway::formatWhen(char* when, size_t sz) {
+  when[0] = 0;
+  time_t t = time(nullptr);  // системний час: із NTP, уже київський завдяки configTzTime()
+  if (t < NTP_READY_EPOCH_THRESHOLD) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: NTP not synced yet, sending alert without a timestamp");
+  } else {
+    struct tm lt;
+    localtime_r(&t, &lt);
+    snprintf(when, sz, " %02d:%02d", lt.tm_hour, lt.tm_min);
+  }
 }
 
 void AirRaidGateway::handleState(const PollSnapshot& snap) {
   AlertState new_state = snap.state;
 
   if (_state == STATE_UNKNOWN) {
-    _state = new_state;  // мовчки встановлюємо базовий стан, при старті не шлемо нічого
+    // Мовчки встановлюємо базовий стан, при старті не шлемо нічого. Якщо це ALERT
+    // (ребут посеред тривоги), _announced лишається невалідним: перші деталі, що
+    // прийдуть із перечитування, стануть базою мовчки, без "ПІДВИЩЕНО".
+    _state = new_state;
     MESH_DEBUG_PRINTLN("AirRaidGateway: baseline = %s", new_state == STATE_ALERT ? "ALERT" : "CLEAR");
     return;
   }
@@ -160,13 +260,18 @@ void AirRaidGateway::handleState(const PollSnapshot& snap) {
 
   _state = new_state;
 
+  // Нова тривога чи відбій - оголошене починається з нуля.
+  _announced = AlertAnnounced();
   if (new_state == STATE_ALERT && snap.has_details) {
     _level = snap.level;
     StrHelper::strncpy(_threat_list, snap.threat_list, sizeof(_threat_list));
+    _announced.adopt(snap.level, snap.threat_mask, snap.from_primary);
   } else {
     // Відбій або тривога, для якої детальний запит не вдався - показувати нічого.
+    // (Для тривоги "звичайне" повідомлення все одно оголошено: рівень UNKNOWN.)
     _level = ALERT_LEVEL_UNKNOWN;
     _threat_list[0] = 0;
+    if (new_state == STATE_ALERT) _announced.adopt(ALERT_LEVEL_UNKNOWN, 0, false);
   }
 
   if (_ui != NULL) {
@@ -178,18 +283,8 @@ void AirRaidGateway::handleState(const PollSnapshot& snap) {
     }
   }
 
-  // " HH:MM" або "", поки NTP не синхронізувався (щойно після старту система
-  // віддає неправдоподібну епоху - фальшивий час не друкуємо).
   char when[8];
-  when[0] = 0;
-  time_t t = time(nullptr);  // системний час: із NTP, уже київський завдяки configTzTime()
-  if (t < NTP_READY_EPOCH_THRESHOLD) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: NTP not synced yet, sending alert without a timestamp");
-  } else {
-    struct tm lt;
-    localtime_r(&t, &lt);
-    snprintf(when, sizeof(when), " %02d:%02d", lt.tm_hour, lt.tm_min);
-  }
+  formatWhen(when, sizeof(when));
 
   char msg[160];
   if (new_state != STATE_ALERT) {
@@ -200,12 +295,93 @@ void AirRaidGateway::handleState(const PollSnapshot& snap) {
   } else {
     const char* emoji = (_level == ALERT_LEVEL_YELLOW) ? "\xF0\x9F\x9F\xA1"   // U+1F7E1
                                                        : "\xF0\x9F\x94\xB4";  // U+1F534
-    if (_threat_list[0]) {
-      snprintf(msg, sizeof(msg), "%s ТРИВОГА — %s%s (%s)", emoji, REGION_NAME, when, _threat_list);
+    char list[THREAT_LIST_MAX_BYTES + 1];
+    fitThreatList(_threat_list, list, sizeof(list), LIST_BUDGET_FIRST);
+    if (list[0]) {
+      snprintf(msg, sizeof(msg), "%s ТРИВОГА — %s%s (%s)", emoji, REGION_NAME, when, list);
     } else {
       // Рівень відомий, але загроз не перелічено - порожні дужки прибираємо.
       snprintf(msg, sizeof(msg), "%s ТРИВОГА — %s%s", emoji, REGION_NAME, when);
     }
+  }
+  sendChannelText(msg);
+}
+
+// Свіжі деталі активної тривоги (планове перечитування). Рішення приймає
+// evaluateEscalation(); тут лише його наслідки: OLED і, за потреби, повідомлення.
+void AirRaidGateway::handleDetailRefresh(const PollSnapshot& snap) {
+  // Запізніле перечитування після відбою чи до першого зчитування - відкидаємо.
+  if (_state != STATE_ALERT || !snap.has_details) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: refresh dropped (state is not ALERT) -> none");
+    return;
+  }
+
+  const bool had_base = _announced.valid;
+  // Запис області після запису району - не дані про наш район: ні канал, ні OLED
+  // за ним не рухаємо (evaluateEscalation() теж поверне ESC_NONE).
+  const bool foreign = had_base && _announced.from_primary && !snap.from_primary;
+  EscalationAction act = evaluateEscalation(_announced, snap.level, snap.threat_mask, snap.from_primary);
+
+  // Два окремі рівні. _announced - що востаннє оголошено в каналі (змінюється лише
+  // оголошенням, після пониження - нижчий). _level - для екрана: ПОТОЧНИЙ рівень
+  // останнього успішного перечитування, тож TRYVOGA R -> TRYVOGA Y одразу, ще до
+  // того, як пониження підтвердиться для каналу.
+  if (!foreign) {
+    _level = snap.level;
+    StrHelper::strncpy(_threat_list, snap.threat_list, sizeof(_threat_list));
+  }
+
+  // Один рядок на кожне перечитування, щоб при тривозі звіряти з офіційним застосунком.
+  //   announce raise / announce raise (new threat) / announce lower - пішло в канал;
+  //   pending lower (n/N) - нижчий рівень за записом району побачено, але ще не підтверджено;
+  //   none (oblast record cannot lower) - нижчий рівень лише за записом області: у канал нічого,
+  //   екран показує його; baseline - перші деталі після ребуту взято мовчки;
+  //   none - у канал нічого (рівень і набір загроз без змін, або зникла загроза, або запис
+  //   області не може змінити оголошене за районом - тоді екран теж не чіпаємо).
+  char decision[40];
+  switch (act) {
+    case ESC_SEND_RAISE:   strcpy(decision, "announce raise"); break;
+    case ESC_SEND_THREAT:  strcpy(decision, "announce raise (new threat)"); break;
+    case ESC_SEND_LOWER:   strcpy(decision, "announce lower"); break;
+    case ESC_PENDING_LOWER:
+      snprintf(decision, sizeof(decision), "pending lower (%u/%u)",
+               (unsigned)_announced.lower_count, (unsigned)ESC_LOWER_CONFIRMATIONS);
+      break;
+    case ESC_BLOCKED_LOWER: strcpy(decision, "none (oblast record cannot lower)"); break;
+    case ESC_SILENT:       strcpy(decision, had_base ? "silent" : "baseline"); break;
+    default:               strcpy(decision, "none"); break;
+  }
+  MESH_DEBUG_PRINTLN("AirRaidGateway: refresh raion=%s hromada=%s city=%s -> %s%s mask=0x%04X threats='%s' 200(%s) -> %s%s [announced %s 0x%04X]",
+                      dash(snap.raion_level), dash(snap.hromada_level), dash(snap.city_level), levelName(snap.level),
+                      snap.from_primary ? "" : " (oblast fallback uid=" ALERT_DETAIL_FALLBACK_UID ")",
+                      (unsigned)snap.threat_mask, snap.threat_list, snap.sent_ims ? "cond" : "uncond", decision,
+                      foreign ? " (oblast record ignored)" : "",
+                      levelName(_announced.level), (unsigned)_announced.threat_mask);
+
+  if (!escalationSends(act)) return;
+
+  const bool lower = (act == ESC_SEND_LOWER);
+  if (_ui != NULL) {
+    _ui->wakeDisplay();
+    _ui->showAlert(lower ? "ZNYZHENO" : "PIDVYSHENO", 5000);
+  }
+
+  char when[8];
+  formatWhen(when, sizeof(when));
+
+  // Емодзі - за оголошеним рівнем, який щойно записано: 🔴 при підвищенні, 🟡 при пониженні.
+  const char* emoji = (_announced.level == ALERT_LEVEL_YELLOW) ? "\xF0\x9F\x9F\xA1"   // U+1F7E1
+                                                               : "\xF0\x9F\x94\xB4";  // U+1F534
+  const char* verb = lower ? "ЗНИЖЕНО" : "ПІДВИЩЕНО";
+  const char* tail = lower ? ". Тривога триває." : "";   // "Тривога триває" обовʼязкова: 🟡 - це не відбій
+  // Перелік обрізається під бюджет саме цього типу повідомлення ("ЗНИЖЕНО" довше за "ПІДВИЩЕНО").
+  char list[THREAT_LIST_MAX_BYTES + 1];
+  fitThreatList(snap.threat_list, list, sizeof(list), lower ? LIST_BUDGET_LOWER : LIST_BUDGET_RAISE);
+  char msg[160];
+  if (list[0]) {
+    snprintf(msg, sizeof(msg), "%s %s — %s%s (%s)%s", emoji, verb, REGION_NAME, when, list, tail);
+  } else {
+    snprintf(msg, sizeof(msg), "%s %s — %s%s%s", emoji, verb, REGION_NAME, when, tail);
   }
   sendChannelText(msg);
 }
@@ -222,6 +398,10 @@ void AirRaidGateway::sendChannelText(const char* text) {
   i += 4;
 
   size_t text_len = strlen(text);
+  if (text_len + NODE_PREFIX_WORST_BYTES > MAX_TEXT_LEN) {   // сторожа бюджетів LIST_BUDGET_*: не має спрацьовувати
+    MESH_DEBUG_PRINTLN("AirRaidGateway: WARNING message %u B + worst node prefix exceeds %d B - would be cut mid-text",
+                        (unsigned)text_len, (int)MAX_TEXT_LEN);
+  }
   size_t max_text = sizeof(frame) - i;
   if (text_len > max_text) text_len = max_text;
   memcpy(&frame[i], text, text_len);
@@ -247,6 +427,8 @@ void AirRaidGateway::sendChannelText(const char* text) {
 struct AlertRecord {
   AlertLevel level;
   uint8_t threat_count;
+  char uid[12];     // лише для налагоджувального логу: з якого запису взято рівень
+  char atype[20];   // (завжди "air_raid" - інші відкидаються, але логуємо те, що справді зчитано)
   char threats[MAX_THREATS][THREAT_TYPE_MAX];
 };
 
@@ -261,17 +443,24 @@ public:
     _tok_len = 0;
     _key[0] = 0;
     _in_record = false;
-    _have_primary = _have_fallback = false;
+    _have_raion = _have_hromada = _have_city = _have_fallback = false;
+    _raion_level = _hromada_level = _city_level = ALERT_LEVEL_UNKNOWN;
+    _local.level = ALERT_LEVEL_UNKNOWN;
+    _local.threat_count = 0;
+    _local.uid[0] = 0;
+    _local.atype[0] = 0;
     resetScratch();
   }
 
-  // NULL, якщо не знайшлося ні цільового запису, ні запасного.
-  const AlertRecord* result() const {
-    if (_have_primary) return &_primary;
-    if (_have_fallback) return &_fallback;
-    return NULL;
-  }
-  bool foundPrimary() const { return _have_primary; }
+  // Об'єднання знайдених серед району/громади/міста; NULL, якщо жоден не знайшовся.
+  const AlertRecord* localResult() const { return foundLocal() ? &_local : NULL; }
+  // Запис області; чинний лише як запасний варіант, коли localResult() == NULL.
+  const AlertRecord* fallbackResult() const { return _have_fallback ? &_fallback : NULL; }
+  bool foundLocal() const { return _have_raion || _have_hromada || _have_city; }
+  // Лише для налагоджувального рядка "raion=... hromada=... city=...".
+  AlertLevel raionLevel() const { return _raion_level; }
+  AlertLevel hromadaLevel() const { return _hromada_level; }
+  AlertLevel cityLevel() const { return _city_level; }
   uint32_t bytesScanned() const { return _total; }
 
   // Обв'язка Print/Stream. Справжню роботу робить лише write(); це приймач, не джерело.
@@ -297,6 +486,7 @@ public:
 private:
   void resetScratch() {
     _uid[0] = 0;
+    _atype[0] = 0;
     _scratch.level = ALERT_LEVEL_UNKNOWN;
     _scratch.threat_count = 0;
   }
@@ -314,11 +504,38 @@ private:
     _scratch.threat_count++;
   }
 
+  // Вливає щойно закритий локальний запис (район/громада/місто) в об'єднаний _local:
+  // рівень - максимум за alertLevelRank() (RED=1 < YELLOW=2 чисельно, тож порівнювати
+  // "сирі" значення enum-а не можна - та сама пастка, що вже врахована в
+  // AirRaidEscalation.h), загрози - об'єднання без дублів за сирою назвою, той самий
+  // патерн, що в addThreat(). uid/atype лишаємо від першого влитого запису - лише
+  // для довідки, на рішення не впливає.
+  void mergeIntoLocal(const AlertRecord& rec) {
+    if (alertLevelRank(rec.level) > alertLevelRank(_local.level)) _local.level = rec.level;
+    if (_local.uid[0] == 0) {
+      StrHelper::strncpy(_local.uid, rec.uid, sizeof(_local.uid));
+      StrHelper::strncpy(_local.atype, rec.atype, sizeof(_local.atype));
+    }
+    for (uint8_t i = 0; i < rec.threat_count; i++) {
+      if (_local.threat_count >= MAX_THREATS) break;
+      bool dup = false;
+      for (uint8_t j = 0; j < _local.threat_count; j++) {
+        if (strcmp(_local.threats[j], rec.threats[i]) == 0) { dup = true; break; }
+      }
+      if (!dup) {
+        StrHelper::strncpy(_local.threats[_local.threat_count], rec.threats[i], THREAT_TYPE_MAX);
+        _local.threat_count++;
+      }
+    }
+  }
+
   // Завершений рядок, який виявився значенням (а не ключем).
   void onValue(const char* val) {
     if (!_in_record) return;
     if (strcmp(_key, "location_uid") == 0) {
       StrHelper::strncpy(_uid, val, sizeof(_uid));
+    } else if (strcmp(_key, "alert_type") == 0) {
+      StrHelper::strncpy(_atype, val, sizeof(_atype));
     } else if (strcmp(_key, "alert_level") == 0) {
       if (strcmp(val, "red") == 0) _scratch.level = ALERT_LEVEL_RED;
       else if (strcmp(val, "yellow") == 0) _scratch.level = ALERT_LEVEL_YELLOW;
@@ -332,13 +549,36 @@ private:
 
   void closeRecord() {
     _in_record = false;
+    // Один location_uid може мати кілька записів із різним alert_type (наприклад,
+    // окремо "air_raid" і "artillery_shelling"). Цікавить лише повітряна тривога;
+    // решту пропускаємо і скануємо далі.
+    if (strcmp(_atype, "air_raid") != 0) {
+      resetScratch();
+      return;
+    }
+    StrHelper::strncpy(_scratch.uid, _uid, sizeof(_scratch.uid));
+    StrHelper::strncpy(_scratch.atype, _atype, sizeof(_scratch.atype));
+    // Район/громада/місто зливаються в об'єднаний _local - жоден не "виграє" й не
+    // обриває пошук інших. Область - лише запасний варіант, якщо жодного з трьох
+    // не знайдеться до кінця документа.
     if (strcmp(_uid, ALERT_DETAIL_LOCATION_UID) == 0) {
-      _primary = _scratch;
-      _have_primary = true;
-      _abort = true;   // отримали те, по що прийшли - обриваємо завантаження
+      mergeIntoLocal(_scratch);
+      _raion_level = _scratch.level;
+      _have_raion = true;
+    } else if (strcmp(_uid, ALERT_DETAIL_HROMADA_UID) == 0) {
+      mergeIntoLocal(_scratch);
+      _hromada_level = _scratch.level;
+      _have_hromada = true;
+    } else if (strcmp(_uid, ALERT_DETAIL_CITY_UID) == 0) {
+      mergeIntoLocal(_scratch);
+      _city_level = _scratch.level;
+      _have_city = true;
     } else if (!_have_fallback && strcmp(_uid, ALERT_DETAIL_FALLBACK_UID) == 0) {
       _fallback = _scratch;
-      _have_fallback = true;   // скануємо далі; цільовий запис ще може трапитись
+      _have_fallback = true;   // скануємо далі; локальні записи ще можуть трапитись
+    }
+    if (_have_raion && _have_hromada && _have_city) {
+      _abort = true;   // усі три знайдено - область більше не потрібна, обриваємо завантаження
     }
     resetScratch();
   }
@@ -404,9 +644,12 @@ private:
   char _tok[JSON_TOKEN_MAX];
   char _key[JSON_KEY_MAX];
   char _uid[12];
+  char _atype[20];   // "artillery_shelling" = 18 символів; довші обрізаються і все одно не дорівнюють "air_raid"
 
-  AlertRecord _scratch, _primary, _fallback;
-  bool _have_primary = false, _have_fallback = false;
+  AlertRecord _scratch, _local, _fallback;
+  bool _have_raion = false, _have_hromada = false, _have_city = false, _have_fallback = false;
+  AlertLevel _raion_level = ALERT_LEVEL_UNKNOWN, _hromada_level = ALERT_LEVEL_UNKNOWN,
+             _city_level = ALERT_LEVEL_UNKNOWN;
 };
 
 static AlertJsonScanner alert_scanner;   // .bss, а не стек задачі
@@ -431,6 +674,24 @@ static const char* translateThreat(const char* raw) {
     if (strcmp(raw, THREAT_NAMES[i].raw) == 0) return THREAT_NAMES[i].uk;
   }
   return "невідомо";
+}
+
+// Біт на кожну загрозу з THREAT_NAMES (індекс = номер біта); незнайомі типи зливаються
+// в останній біт, "unknown" - так само, як у translateThreat(). Ескалацію за новою
+// загрозою визначаємо саме за цією маскою, а не за відрендереним рядком: рядок
+// обмежений THREAT_LIST_MAX_BYTES і не показує загрозу, що не влізла.
+static_assert(sizeof(THREAT_NAMES) / sizeof(THREAT_NAMES[0]) <= 16, "threat_mask is uint16_t");
+static uint16_t threatMask(const AlertRecord& rec) {
+  const size_t n = sizeof(THREAT_NAMES) / sizeof(THREAT_NAMES[0]);
+  uint16_t mask = 0;
+  for (uint8_t i = 0; i < rec.threat_count; i++) {
+    size_t bit = n - 1;   // "unknown" - останній запис таблиці
+    for (size_t k = 0; k < n; k++) {
+      if (strcmp(rec.threats[i], THREAT_NAMES[k].raw) == 0) { bit = k; break; }
+    }
+    mask |= (uint16_t)(1u << bit);
+  }
+  return mask;
 }
 
 // Складає "дрони, ракети" в out, усуваючи дублі за *перекладеною* назвою (кілька
@@ -501,9 +762,16 @@ void AirRaidGateway::pollTaskLoop() {
     // повернувся і його стекові WiFiClientSecure/HTTPClient знищено - дві
     // TLS-сесії не мають жити одночасно на цій купі.
     if (_detail_pending) {
-      fetchDetails();
+      fetchDetailRecord(true);   // відмова лишає has_details == false -> звичайне повідомлення
       _detail_pending = false;
       xQueueOverwrite(_result_queue, &_pending_snap);
+      continue;
+    }
+
+    // Планове перечитування деталей, поки триває тривога: перше через ~30 с після
+    // переходу, далі раз на хвилину. Так само окремим кадром - TLS-сесії послідовні.
+    if (_detail_sched && _task_state == STATE_ALERT && (long)(millis() - _detail_next_at) >= 0) {
+      refreshDetails();
       continue;
     }
 
@@ -596,81 +864,186 @@ void AirRaidGateway::pollOnce() {
                         (unsigned)words_free, ALERT_POLL_TASK_STACK);
   }
 
-  // Детальний запит заслуговує лише перехід CLEAR->ALERT. Притримуємо знімок на
-  // один кадр, щоб тривога понесла з собою список загроз; усе інше йде одразу.
-  // Після старту _task_state дорівнює UNKNOWN, тож тихий baseline запиту не
-  // спричиняє ніколи.
+  // Перехід CLEAR->ALERT: перший детальний запит іде негайно, і знімок притримується
+  // на один кадр, щоб тривога понесла з собою список загроз; усе інше йде одразу.
+  // Після старту _task_state дорівнює UNKNOWN, тож тихий baseline першого запиту
+  // не спричиняє (перше повідомлення чекати не мусить - його нема), але якщо
+  // baseline - ALERT (ребут посеред тривоги), одразу плануємо перечитування, щоб
+  // OLED дізнався рівень. Відбій зупиняє перечитування і скидає Last-Modified.
   if (snap.has_state) {
     bool transition_to_alert = (snap.state == STATE_ALERT && _task_state == STATE_CLEAR);
+    bool baseline_alert = (snap.state == STATE_ALERT && _task_state == STATE_UNKNOWN);
     _task_state = snap.state;
+    if (snap.state == STATE_CLEAR) {
+      _detail_sched = false;
+      _detail_last_modified[0] = 0;
+      _last_read_level = ALERT_LEVEL_UNKNOWN;
+    } else if (transition_to_alert || baseline_alert) {
+      _detail_last_modified[0] = 0;   // перший запит нової тривоги завжди безумовний
+      _last_read_level = ALERT_LEVEL_UNKNOWN;
+      _detail_sched = true;
+      _detail_recheck_pending = transition_to_alert;
+      _detail_periodic_count = 0;
+      _detail_next_at = millis() + (transition_to_alert ? ALERT_DETAIL_RECHECK_MS : 0);
+    }
     if (transition_to_alert) {
       _pending_snap = snap;
       _detail_pending = true;
-      return;   // покладе pollTaskLoop() після того, як відпрацює fetchDetails()
+      return;   // покладе pollTaskLoop() після того, як відпрацює fetchDetailRecord()
     }
   }
 
   xQueueOverwrite(_result_queue, &snap);
 }
 
-// Один додатковий запит, який робиться лише на переході CLEAR->ALERT, щоб внести
-// список загроз у повідомлення. Усі шляхи відмови тут нефатальні за задумом:
-// has_details лишається false, і handleState() відкочується на звичайне
-// повідомлення. Тривога виходить завжди - деталі це бонус, а не передумова.
-void AirRaidGateway::fetchDetails() {
+// Один детальний запит: на переході CLEAR->ALERT (first == true, щоб внести список
+// загроз у перше повідомлення) і для планових перечитувань під час тривоги.
+// Усі шляхи відмови нефатальні за задумом: has_details лишається false, тож перше
+// повідомлення відкочується на звичайне, а перечитування просто мовчить. Тривога
+// виходить завжди - деталі це бонус, а не передумова.
+AirRaidGateway::FetchResult AirRaidGateway::fetchDetailRecord(bool first) {
   _pending_snap.has_details = false;
   _pending_snap.level = ALERT_LEVEL_UNKNOWN;
+  _pending_snap.threat_mask = 0;
+  _pending_snap.from_primary = false;
   _pending_snap.threat_list[0] = 0;
+
+  const unsigned long started_at = millis();
+  const uint16_t timeout_ms = first ? ALERT_FIRST_DETAIL_TIMEOUT_MS : ALERT_DETAIL_HTTP_TIMEOUT_MS;
+  const unsigned long deadline_ms = first ? ALERT_FIRST_DETAIL_DEADLINE_MS : ALERT_DETAIL_DEADLINE_MS;
 
   WiFiClientSecure client;
   client.setInsecure();   // TODO(v2): закріпити/перевіряти сертифікат alerts.in.ua
 
   HTTPClient http;
-  http.setConnectTimeout(ALERT_DETAIL_HTTP_TIMEOUT_MS);
-  http.setTimeout(ALERT_DETAIL_HTTP_TIMEOUT_MS);
+  http.setConnectTimeout(timeout_ms);
+  http.setTimeout(timeout_ms);
+
+  // Last-Modified потрібен, щоб наступний запит пішов з If-Modified-Since: сервер
+  // (перевірено на живому ендпоінті) віддає 304 без тіла, поки документ не змінився.
+  static const char* header_keys[] = { "Last-Modified" };
+  http.collectHeaders(header_keys, 1);
 
   static const char* detail_url = "https://api.alerts.in.ua/v1/alerts/active.json";
   if (!http.begin(client, detail_url)) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: detail http.begin() failed - plain alert");
-    return;
+    MESH_DEBUG_PRINTLN("AirRaidGateway: detail http.begin() failed");
+    return FETCH_FAIL;
   }
   http.addHeader("Authorization", "Bearer " ALERTS_TOKEN);
+  const bool sent_ims = _detail_last_modified[0] != 0;
+  if (sent_ims) http.addHeader("If-Modified-Since", _detail_last_modified);
 
   int code = http.GET();
 
   // Навмисно НЕ чіпає ні _poll_interval_ms, ні http_code у знімку: 429 на цьому
-  // нечастому запиті не має ні гальмувати 15-секундне опитування, ні показуватись
-  // як "API err" на сторінці AIRRAID, яка стежить лише за основним ендпоінтом.
-  if (code != 200) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: detail HTTP %d - plain alert", code);
+  // запиті не має ні гальмувати 15-секундне опитування, ні показуватись як
+  // "API err" на сторінці AIRRAID, яка стежить лише за основним ендпоінтом.
+  if (code == 304) {
     http.end();
-    return;
+    return FETCH_NOT_MODIFIED;
+  }
+  if (code != 200) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: detail HTTP %d", code);
+    http.end();
+    return FETCH_FAIL;
   }
 
-  alert_scanner.begin(millis() + ALERT_DETAIL_DEADLINE_MS);
+  alert_scanner.begin(started_at + deadline_ms);
   http.writeToStream(&alert_scanner);   // відʼємний результат очікуваний при достроковому обриві
+
+  char last_modified[sizeof(_detail_last_modified)];
+  last_modified[0] = 0;
+  if (http.hasHeader("Last-Modified")) {
+    StrHelper::strncpy(last_modified, http.header("Last-Modified").c_str(), sizeof(last_modified));
+  }
   http.end();
 
-  const AlertRecord* rec = alert_scanner.result();
+  // Розбивка по трьох uid дійсна для цього сканування незалежно від того, чи знайшлося
+  // хоч щось - виставляємо її одразу, щоб обидва шляхи нижче (успіх і "нічого не знайдено") могли її залогувати.
+  _pending_snap.raion_level = alert_scanner.raionLevel();
+  _pending_snap.hromada_level = alert_scanner.hromadaLevel();
+  _pending_snap.city_level = alert_scanner.cityLevel();
+
+  const AlertRecord* rec = alert_scanner.localResult();
+  if (rec == NULL) rec = alert_scanner.fallbackResult();
   if (rec == NULL) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: detail - no record for uid %s or %s in %u bytes - plain alert",
-                        ALERT_DETAIL_LOCATION_UID, ALERT_DETAIL_FALLBACK_UID, (unsigned)alert_scanner.bytesScanned());
-    return;
+    MESH_DEBUG_PRINTLN("AirRaidGateway: detail - no air_raid record for uid %s/%s/%s or fallback %s in %u bytes"
+                        " (raion=%s hromada=%s city=%s)",
+                        ALERT_DETAIL_LOCATION_UID, ALERT_DETAIL_HROMADA_UID, ALERT_DETAIL_CITY_UID,
+                        ALERT_DETAIL_FALLBACK_UID, (unsigned)alert_scanner.bytesScanned(),
+                        dash(_pending_snap.raion_level), dash(_pending_snap.hromada_level), dash(_pending_snap.city_level));
+    return FETCH_FAIL;
   }
   if (rec->level == ALERT_LEVEL_UNKNOWN) {
-    MESH_DEBUG_PRINTLN("AirRaidGateway: detail - record has no usable alert_level - plain alert");
-    return;
+    MESH_DEBUG_PRINTLN("AirRaidGateway: detail - record has no usable alert_level");
+    return FETCH_FAIL;
   }
 
   _pending_snap.level = rec->level;
+  _pending_snap.threat_mask = threatMask(*rec);
+  _pending_snap.from_primary = alert_scanner.foundLocal();
+  _pending_snap.sent_ims = sent_ims;
   renderThreatList(*rec, _pending_snap.threat_list, sizeof(_pending_snap.threat_list));
   _pending_snap.has_details = true;
 
-  MESH_DEBUG_PRINTLN("AirRaidGateway: detail ok (%s, uid %s, %u threats, %u bytes scanned) -> '%s'",
-                      rec->level == ALERT_LEVEL_RED ? "red" : "yellow",
-                      alert_scanner.foundPrimary() ? ALERT_DETAIL_LOCATION_UID : ALERT_DETAIL_FALLBACK_UID,
-                      (unsigned)rec->threat_count, (unsigned)alert_scanner.bytesScanned(),
-                      _pending_snap.threat_list);
+  // Запамʼятовуємо Last-Modified лише після вдалого розбору з відомим рівнем: 304 на
+  // відповідь, з якої ми нічого не вичитали, назавжди сховав би зміни. Немає заголовка
+  // - наступний запит просто безумовний.
+  // Виняток: рівень нижчий, ніж при попередньому читанні. Пониження йде в канал лише після
+  // двох перечитувань ПОСПІЛЬ, а 304 знімка не дає, тож друге підтвердження могло б
+  // зникнути. Порожній Last-Modified робить наступний запит безумовним, тобто реальним читанням.
+  // Якщо попереднього читання не було (перший запит нової тривоги не вдався, і в канал пішло
+  // звичайне 🔴), то воно для каналу рівнозначне червоному: жовте перше читання - теж пониження.
+  const uint8_t prev_rank = (_last_read_level == ALERT_LEVEL_UNKNOWN) ? alertLevelRank(ALERT_LEVEL_RED)
+                                                                     : alertLevelRank(_last_read_level);
+  const bool lower_than_prev = alertLevelRank(rec->level) < prev_rank;
+  _last_read_level = rec->level;
+  StrHelper::strncpy(_detail_last_modified, lower_than_prev ? "" : last_modified,
+                     sizeof(_detail_last_modified));
+
+  // Перечитування логує один рядок у handleDetailRefresh() (разом із рішенням); тут лише перший запит.
+  if (first) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: first detail ok (raion=%s hromada=%s city=%s -> %s%s, %u threats, %u bytes scanned, %s) -> '%s'",
+                        dash(_pending_snap.raion_level), dash(_pending_snap.hromada_level), dash(_pending_snap.city_level),
+                        levelName(rec->level), _pending_snap.from_primary ? "" : " (oblast fallback uid=" ALERT_DETAIL_FALLBACK_UID ")",
+                        (unsigned)rec->threat_count, (unsigned)alert_scanner.bytesScanned(),
+                        last_modified[0] ? "LM stored" : "no LM", _pending_snap.threat_list);
+  }
+  return FETCH_OK;
+}
+
+// Планове перечитування під час тривоги. Знімок у чергу лише за FETCH_OK: 304, помилка,
+// таймаут чи 429 - тиша, стан ескалації не скидається. Швидке перечитування (~30 с після
+// переходу) при невдачі повторюється один раз через ALERT_DETAIL_RETRY_MS.
+void AirRaidGateway::refreshDetails() {
+  memset(&_pending_snap, 0, sizeof(_pending_snap));
+  _pending_snap.is_refresh = true;
+  _pending_snap.wifi_connected = true;
+
+  // Безумовний запит: швидке перечитування і кожне ALERT_DETAIL_FULL_EVERY_N-те планове.
+  // Достатньо скинути Last-Modified - без нього fetchDetailRecord() не шле If-Modified-Since.
+  // (Якщо швидке перечитування впаде, Last-Modified лишиться порожнім, і повторна спроба
+  // теж безумовна.)
+  bool unconditional = _detail_recheck_pending;
+  if (!_detail_recheck_pending && (++_detail_periodic_count % ALERT_DETAIL_FULL_EVERY_N) == 0) {
+    unconditional = true;
+  }
+  if (unconditional) _detail_last_modified[0] = 0;
+
+  FetchResult r = fetchDetailRecord(false);
+
+  unsigned long delay_ms = ALERT_DETAIL_REFRESH_MS;
+  if (r == FETCH_OK) {
+    xQueueOverwrite(_result_queue, &_pending_snap);   // рядок логу з рішенням - у handleDetailRefresh()
+  } else if (r == FETCH_NOT_MODIFIED) {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: refresh 304 not modified (cond) -> none");
+  } else {
+    MESH_DEBUG_PRINTLN("AirRaidGateway: refresh failed (%s) -> none, state kept",
+                        unconditional ? "uncond" : "cond");
+    if (_detail_recheck_pending) delay_ms = ALERT_DETAIL_RETRY_MS;
+  }
+  _detail_recheck_pending = false;
+  _detail_next_at = millis() + delay_ms;
 }
 
 #endif
